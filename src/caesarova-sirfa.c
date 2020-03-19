@@ -158,10 +158,11 @@ int compute_levenstein_distance(char const* a, char const* b) {
 	/* First column contains growing sequence of integers, because there are k differences 
 	between an empty string and a string of length k. */
 	for (int row = 0; row < height; ++row)
-		previous_column[row] = row;
+		this_column[row] = row;
 
 	/* Construct remaining columns iteratively. */
 	for (int column = 1; column <= b_len; ++column) {
+		swap(&this_column, &previous_column);
 
 		//First row is similar to first column. k distances between "" and string of length k
 		this_column[0] = column; 
@@ -171,7 +172,6 @@ int compute_levenstein_distance(char const* a, char const* b) {
 										previous_column[row] + 1, 
 										previous_column[row - 1] + cost);
 		}
-		swap(&this_column, &previous_column);
 	}
 
 	int const result = this_column[a_len];
@@ -197,7 +197,7 @@ void solve_optional(char* encoded, char const* const intercpeted) {
 
 		encode_string_Caesar(modifiable_copy, 1);
 		int const distance = compute_levenstein_distance(modifiable_copy, intercpeted);
-		//printf("Strings %s and %s have distance %d\n", tmp, intercpeted, distance);
+		//printf("Strings %s and %s have distance %d\n", modifiable_copy, intercpeted, distance);
 
 		if (distance < min_distance) {
 			min_distance = distance;

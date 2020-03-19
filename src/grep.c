@@ -4,29 +4,40 @@
 
 
 /* Global variables storing the program's state.*/
-#define INITIAL_CAPACITY 1024
+#define INITIAL_LINE_CAPACITY 1024
 #define GROWTH_RATIO 141 / 100
 #define color_begin "\x1b[01;31m\x1b[K"
 #define color_end "\x1b[m\x1b[K"
-int const regex_reject = -1;
+int const REGEX_REJECT = -1;
 
 
 FILE* input_stream;
 bool colorize_output = false;
 bool use_regex = false;
 const char* pattern = NULL;
-bool matched_successfully = false;
-//NULL if reading stdin. Filesystem path pointing to the read file otherwise
-const char* input_stream_name = NULL;
+bool matched_some = false;
+
+const char* input_stream_name = "stdin";
 bool print_line_numbers = false;
 
 
 
-
+/* Structure holding information about the size and location of dynamically growing string. */
 typedef struct dynamic_string {
 	int capacity;
 	char* ptr;
 } dynamic_string;
+
+void dynamic_string_grow(dynamic_string* const line) {
+	line->capacity = line->capacity * GROWTH_RATIO;
+	char* const reallocated = realloc(line->ptr, line->capacity);
+	if (!reallocated) {
+		fprintf(stderr, "%sError:%s Unable to reallocate %d bytes of memory. Halting.\n", color_begin, color_end, line->capacity);
+		free(line->ptr);
+		exit(EXIT_FAILURE);
+	}
+	line->ptr = reallocated;
+}
 
 dynamic_string input_line;
 
@@ -39,7 +50,7 @@ bool strings_same(char const* a, char const* b) {
 		if (*a != *b)
 			return false;
 
-	//if one os thre strings has not ended yet, their lenghts are not equal
+	//if one of the strings has not ended yet, their lenghts are not equal
 	return !*a && !*b;
 }
 
@@ -84,19 +95,7 @@ void set_global_state(char** argument) {
 		}
 	}
 	//Allocate internal buffer only iff no error occured 
-	input_line = (dynamic_string){ .capacity = INITIAL_CAPACITY, .ptr = malloc(INITIAL_CAPACITY) };
-}
-
-
-void dynamic_string_grow(dynamic_string* const line) {
-	line->capacity = line->capacity * GROWTH_RATIO;
-	char * const reallocated = realloc(line->ptr, line->capacity);
-	if (!reallocated) {
-		fprintf(stderr, "%sError:%s Unable to reallocate %d bytes of memory. Halting.\n", color_begin, color_end, line->capacity);
-		free(line->ptr);
-		exit(EXIT_FAILURE);
-	}
-	line->ptr = reallocated;
+	input_line = (dynamic_string){ .capacity = INITIAL_LINE_CAPACITY, .ptr = malloc(INITIAL_LINE_CAPACITY) };
 }
 
 void read_input(dynamic_string *const line) {
@@ -145,13 +144,13 @@ void regex_init(regex_state_machine* const rsm, int capacity) {
 		regex_state* const state = &rsm->states[i];
 		state->id = i;
 		state->accepted_letter = '\0';
-		state->state_on_match = 0;
-		state->state_otherwise = regex_reject;
+		state->state_on_match = REGEX_REJECT;
+		state->state_otherwise = REGEX_REJECT;
 	}
 }
 
 /*Construct a state machine for regex parsing. Some memory storage is preallocated based
-on a heuristic guess. Linked list of states is then constructed, taking the global settings in mind. */
+on an educated guess. Linked list of states is then constructed, taking the global settings in mind. */
 regex_state_machine regex_compile(const char* regex) {
 
 	regex_state_machine rsm;
@@ -201,8 +200,6 @@ regex_state_machine regex_compile(const char* regex) {
 
 }
 
-
-
 /* Returns index of the next state when matching a string against the regex. */
 int regex_state_get_next(regex_state* const state, char next_char) {
 	return state->accepted_letter == next_char ? state->state_on_match : state->state_otherwise;
@@ -215,7 +212,7 @@ bool regex_match_success(regex_state_machine const* rsm) {
 
 /* Returns true iff given regex state machine just failed to match a string. */
 bool regex_match_fail(regex_state_machine const* rsm) {
-	return rsm->state_current == regex_reject;
+	return rsm->state_current == REGEX_REJECT;
 }
 
 /* Returns true iff given regex state machine finished matching - it either succeeded or failed. */
@@ -230,9 +227,9 @@ void regex_match_start(regex_state_machine* rsm) {
 
 /* State machine transfer function. Chooses the new state for given state machine 
    based on current state and supplied character. */
-void regex_match_transfer(regex_state_machine* rsm, char next_char) {
-	regex_state * const current = &rsm->states[rsm->state_current];
-	rsm->state_current = regex_state_get_next(current, next_char);
+void regex_transfer_function(regex_state_machine* rsm, char next_char) {
+	regex_state * const state = &rsm->states[rsm->state_current];
+	rsm->state_current = regex_state_get_next(state, next_char);
 
 	/*Here we have to compensate a tradeoff for simple implementation of regex_compile.
 	  Because of the way optional matching (c?) is now implemented, it is sometimes 
@@ -241,7 +238,7 @@ void regex_match_transfer(regex_state_machine* rsm, char next_char) {
 	  A second transfer is then required to consume the letter b.
 	  
 	  This must be performed every time the first transfer doesn't match a letter whilst not setting the regex to fail.*/
-	if (!regex_match_fail(rsm) && current->accepted_letter != next_char)
+	if (!regex_match_fail(rsm) && state->accepted_letter != next_char)
 		rsm->state_current = regex_state_get_next(&rsm->states[rsm->state_current], next_char);
 }
 
@@ -251,7 +248,7 @@ bool regex_match_exact(regex_state_machine* const rsm, char const* string) {
 
 	int write_index = 0;
 	for (regex_match_start(rsm); *string && !regex_match_ended(rsm); ++string, ++write_index) {
-		regex_match_transfer(rsm, *string);
+		regex_transfer_function(rsm, *string);
 		rsm->matched_string.ptr[write_index] = *string;
 		if (write_index + 1 == rsm->matched_string.capacity)
 			dynamic_string_grow(&rsm->matched_string);
@@ -266,7 +263,7 @@ bool regex_match_exact(regex_state_machine* const rsm, char const* string) {
 }
 
 /* Returns true iff 'line' contains any substring matched by regex. */
-bool regex_match(regex_state_machine* const rsm, char const* line) {
+bool regex_matches_some(regex_state_machine* const rsm, char const* line) {
 	for (; *line; ++line)
 		if (regex_match_exact(rsm, line))
 			return true;
@@ -308,23 +305,20 @@ int main(int argc, char** argv) {
 	for (int line_number = 1; !feof(input_stream); ++line_number) {
 	
 		read_input(&input_line);
-		if (regex_match(&rsm, input_line.ptr)) {
+		if (regex_matches_some(&rsm, input_line.ptr)) {
 
-			if (print_line_numbers) {
-				if (input_stream_name)
-					printf("%s:", input_stream_name);
-				printf("%d:", line_number);
-			}
+			if (print_line_numbers) 
+				printf("%s:%d:", input_stream_name, line_number);
 
 			if (colorize_output)
 				print_colorized(&rsm, input_line.ptr);
 			else
 				printf("%s\n", input_line.ptr);
-			matched_successfully = true;
+			matched_some = true;
 		}
 	}
 
 	cleanup(&rsm);
 
-	return matched_successfully ? EXIT_SUCCESS : 1;
+	return matched_some ? EXIT_SUCCESS : 1;
 }

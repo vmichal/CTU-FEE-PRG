@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <ctype.h>
-
+#include <assert.h>
 
 #define initial_capacity 64
 #define growth_ratio 141/100
@@ -15,7 +15,7 @@ int minimum(int a, int b, int c) {
 		return b < c ? b : c;
 }
 
-/*Reads one line from stdin into dynamically allocated buffer. Caller is responsible for memory freeing. */
+/*Reads one line from stdin into dynamically allocated buffer. Caller is responsible for freeing the allocated memory. */
 char* readline() {
 
 	int size = initial_capacity;
@@ -25,9 +25,13 @@ char* readline() {
 
 		if (index + 1 == size) {
 			size = size * growth_ratio;
-			/*We're not checking the returned value here, because the assignment DOES NOT state, 
-			what shall be done if we run out of memeory. */
-			line = realloc(line, size); 
+			/* The assignment DOES NOT state, what shall be done if we run out of memory. */
+			char * const new_line = (char*)realloc(line, size); 
+			if (!new_line) {
+				free(line);
+				return NULL;
+			}
+			line = new_line;
 		}
 
 		line[index] = getchar();
@@ -42,6 +46,7 @@ int const alphabet_size = 'z' - 'a' + 1;
 
 /* Counts number of characters that appear in both a and b on the same offset.*/
 int count_similarities(char const* a, char const* b) {
+	assert(strlen(a) == strlen(b));
 	int similarities = 0;
 	for (; *a; ++a, ++b)
 		if (*a == *b)
@@ -49,7 +54,10 @@ int count_similarities(char const* a, char const* b) {
 	return similarities;
 }
 
-/*						ATTENTION! 
+/******************************************************
+				IMPORTANT
+*******************************************************
+! 
 For the purpose of making encoding and decoding functionality easily legible, 
 I've defined a term "canonical form" of char. Since we only assume the letters 
 of english alphabet with lowercase preceding uppercase, shifing characters would reuire
@@ -58,51 +66,66 @@ with lowercase letters preceding uppercase. (E.g. letter 'B' should have value 2
 
 Canonical form is used to perform caesar's cipher calculations and final value is converted back to normal char. */
 
-char char_to_canonical(char c) {
-	char const result = islower(c) ? c - 'a' : c - 'A' + alphabet_size;
+int char_to_canonical(char c) {
+	assert(islower(c) || isupper(c));
+
+	int const result = islower(c) ? c - 'a' : c - 'A' + alphabet_size;
 	//printf("Canonicalize char %c => %d\n", c, result);
 	return result;
 }
 
-char char_from_canonical(char value) {
+char canonical_to_char(int value) {
+	assert(value >= 0 && value < alphabet_size * 2);
+
 	char const result = value < alphabet_size ?  value + 'a' : value - alphabet_size + 'A';
 	//printf("Decode value %d => char %c\n", value, result);
 	return result;
 }
 
-void encode_string_Caesar(char* string, int offset) {
+/* Perform Caesar's cipher shiftign by given 'shift' on given string INPLACE,
+	i.e. the pointed to string is modified directly. */
+void encode_string_Caesar(char* string, int shift) {
 	for (; *string; ++string) {
 		int const new = char_to_canonical(*string);
-		int const new_shifted = new + offset;
-		char const result = char_from_canonical(new_shifted % (2 * alphabet_size));
+		int const new_shifted = (new + shift) % (2 * alphabet_size);
+		char const result = canonical_to_char(new_shifted);
 		//printf("Character %c, value %d, after %d, result %c\n", *string, new, new_shifted, result);
 		*string = result;
 	}
 }
 
-void solve_simple(char* encoded, char const* const intercepted) {
+/* Solve simple assignment - given both encoded string and partially incorrectly intercepted 
+	original message, find an integer best_shift, for which, when used as argument of Caesar's cipher,
+	decoded string shares the most letters with the intercepted one.*/
+void solve_simple(char* const encoded, char const* const intercepted) {
 
-	char* const tmp = (char*)malloc(strlen(encoded) + 1);
-	strcpy(tmp, encoded);
+	/* Copy of encoded string, on which all modifications will take place. */
+	char* const modifiable_copy = (char*)malloc(strlen(encoded) + 1);
+	strcpy(modifiable_copy, encoded);
 
-	int best = 0, max_similarities = count_similarities(tmp, intercepted);
+	//We assume that no shift is the best option so far
+	int best_shift = 0, max_similarities = count_similarities(modifiable_copy, intercepted);
 
+	//And cycle through all other possible shifts searching for the one, which produces the most similarities
 	for (int i = 1; i < 2 * alphabet_size; ++i) {
 
-		encode_string_Caesar(tmp, 1);
-		int const similarities = count_similarities(tmp, intercepted);
+		encode_string_Caesar(modifiable_copy, 1);
+		int const similarities = count_similarities(modifiable_copy, intercepted);
 		//printf("Strings %s and %s have %d similarities\n", tmp, intercpeted, similarities);
 		if (similarities > max_similarities) {
 			max_similarities = similarities;
-			best = i;
+			best_shift = i;
 		}
 	}
-	free(tmp);
+	free(modifiable_copy);
 
-	encode_string_Caesar(encoded, best);
+	//finally the best found solution is applied and printed
+	encode_string_Caesar(encoded, best_shift);
 	printf("%s\n", encoded);
 }
 
+/* Checks all characters in a string and returns true iff none of them falls outside valid alphabet.
+	Reminder: valid alphabet consists of lowercase and uppercase letters of latin alphabet with lowercase preceding upper.*/
 bool has_valid_alphabet(char const* string) {
 
 	for (; *string; ++string)
@@ -111,45 +134,69 @@ bool has_valid_alphabet(char const* string) {
 	return true;
 }
 
-int levenstein_distance(char const* a, char const* b) {
+void swap(int** a, int** b) {
+	int * tmp = *a;
+	*a = *b;
+	*b = tmp;
+}
+
+/* Compute levenstein distance of two sttrings. 
+
+	Algorithm adapted from dr. Genyk-Berezovskyj's seminar at FEE CTU on dynamic programming,
+	it replaces full matrix of Wagner–Fischer by only two columns that are required at each time. */
+int compute_levenstein_distance(char const* a, char const* b) {
 
 	int const a_len = strlen(a), b_len = strlen(b);
-	
-	int** const matrix = (int**)malloc(sizeof(int*) * (a_len + 1));
-	for (int row = 0; row <= a_len; ++row) 
-		matrix[row] = (int*)malloc(sizeof(int) * (b_len + 1));
+	int const height = a_len + 1;
 
-	for (int row = 0; row <= a_len; ++row)
-		matrix[row][0] = row;
-	for (int col = 0; col <= b_len; ++col)
-		matrix[0][col] = col;
+	/* The algorithm traverses virtual matrix from top to bottom by columns, it is therefore sufficient
+	to keep two columns in memory at any point in time. One column is used as source of data, the other 
+	is being filled by new data. At the end of each iteration of the algorithm, they are swapped. */
+	int *previous_column = (int*) malloc(sizeof(int) * height),
+		*this_column = (int*) malloc(sizeof(int) * height);
 
-	for (int col = 1; col <= b_len; ++col)
-		for (int row = 1; row <= a_len; ++row) {
-			int const cost = a[row - 1] == b[col - 1] ? 0 : 1;
-			matrix[row][col] = minimum(matrix[row - 1][col] + 1, matrix[row][col - 1] + 1, matrix[row - 1][col - 1] + cost);
+	/* First column contains growing sequence of integers, because there are k differences 
+	between an empty string and a string of length k. */
+	for (int row = 0; row < height; ++row)
+		previous_column[row] = row;
+
+	/* Construct remaining columns iteratively. */
+	for (int column = 1; column <= b_len; ++column) {
+
+		//First row is similar to first column. k distances between "" and string of length k
+		this_column[0] = column; 
+		for (int row = 1; row < height; ++row) {
+			int const cost = a[row - 1] == b[column - 1] ? 0 : 1;
+			this_column[row] = minimum(this_column[row - 1] + 1, 
+										previous_column[row] + 1, 
+										previous_column[row - 1] + cost);
 		}
+		swap(&this_column, &previous_column);
+	}
 
-	int const result = matrix[a_len][b_len];
+	int const result = this_column[a_len];
 
-	for (int row = 0; row <= a_len; ++row)
-		free(matrix[row]);
-	free(matrix);
+	free(previous_column);
+	free(this_column);
 
 	return result;
 }
 
+/* Solves optional form of asignment: Missheard and/or missing letters may occur in the input. 
+	The optimal solution is now that one, which has the lowest levenstein distance of 
+	intercepted (possibly missheard) original message and decoded string. */
 void solve_optional(char* encoded, char const* const intercpeted) {
+	
+	char* const modifiable_copy = (char*)malloc(strlen(encoded) + 1);
+	strcpy(modifiable_copy, encoded);
 
-	char* const tmp = (char*)malloc(strlen(encoded) + 1);
-	strcpy(tmp, encoded);
-
-	int best = 0, min_distance = levenstein_distance(tmp, intercpeted);
+	//We assume that no shift is the best solution and then cycle though all others
+	int best = 0, min_distance = compute_levenstein_distance(modifiable_copy, intercpeted);
 
 	for (int i = 1; i < 2 * alphabet_size; ++i) {
 
-		encode_string_Caesar(tmp, 1);
-		int const distance = levenstein_distance(tmp, intercpeted);
+		encode_string_Caesar(modifiable_copy, 1);
+		int const distance = compute_levenstein_distance(modifiable_copy, intercpeted);
 		//printf("Strings %s and %s have distance %d\n", tmp, intercpeted, distance);
 
 		if (distance < min_distance) {
@@ -157,18 +204,19 @@ void solve_optional(char* encoded, char const* const intercpeted) {
 			best = i;
 		}
 	}
-	free(tmp);
+	free(modifiable_copy);
 
 	encode_string_Caesar(encoded, best);
 	printf("%s\n", encoded);
-
 }
 
 int main(int argc, char ** argv) {
 
+	//Assignment guarantees that two lines of input will be available
 	char* encoded = readline();
 	char* intercepted = readline();
 
+	//Check whether both strings only contain valid characters. Otherwise print error and exit
 	if (!has_valid_alphabet(encoded) || !has_valid_alphabet(intercepted)) {
 		fprintf(stderr, "Error: Chybny vstup!\n");
 		free(encoded);

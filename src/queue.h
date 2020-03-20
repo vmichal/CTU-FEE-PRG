@@ -7,7 +7,19 @@
 
 /* Queue structure which holds all necessary data */
 typedef struct {
-    int read, write, capacity;
+
+    /* Positions of read and write pointers within the buffer. Their values are not
+    kept within the range 0..capacity as normal, instead they are free to grow 
+    above this value and modulo operations are performed only when push/pop is executed.
+
+    This way none of the capacity is wasted, whilst normally, when read and write is stored
+    modulo capacity, one spot is wasted to distinguish full and empty buffer (read == write
+    would have ambiguous meaning). */
+    unsigned int read, write;
+
+    /* Size of allocated buffer. */
+    unsigned int capacity;
+
     void** data;
 } queue_t;
 

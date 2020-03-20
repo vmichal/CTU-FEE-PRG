@@ -1,5 +1,7 @@
 #include "queue.h"
 
+/* Doubles the allocated capacity for queue or does nothing if error occures.
+	Returns true iff reallocation was successful.*/
 bool queue_grow(queue_t * const queue) {
 	int const size = get_queue_size(queue);
 	int const new_capacity = queue->capacity * 2;
@@ -8,8 +10,9 @@ bool queue_grow(queue_t * const queue) {
 	if (!new_storage)
 		return false;
 
-	for (int i = 0; queue->read < queue->write; ++i, ++queue->read)
-		new_storage[i] = queue->data[queue->read % queue->capacity];
+	//Copy stored data into the new buffer.
+	for (int i = 0; i < size; ++i)
+		new_storage[i] = get_from_queue(queue, i);
 
 	free(queue->data);
 	queue->data = new_storage;
@@ -20,6 +23,7 @@ bool queue_grow(queue_t * const queue) {
 	return true;
 }
 
+/* Reduce the queue's capacity to one third and shrink allocated storage. */
 void queue_shrink(queue_t * const queue) {
 	int const size = get_queue_size(queue);
 	int const new_capacity = size + 3;
@@ -27,8 +31,8 @@ void queue_shrink(queue_t * const queue) {
 	if (!new_storage) //If we can't shrink the queue than don't try to do so
 		return;
 
-	for (int i = 0; queue->read <queue->write; ++i, ++queue->read)
-		new_storage[i] = queue->data[queue->read % queue->capacity];
+	for (int i = 0; i < size; ++i)
+		new_storage[i] = get_from_queue(queue, i);
 
 	free(queue->data);
 	queue->data = new_storage;
@@ -61,7 +65,7 @@ queue_t* create_queue(int capacity) {
 	return queue;
 }
 
-void delete_queue(queue_t* queue) {
+void delete_queue(queue_t * queue) {
 	free(queue->data);
 	free(queue);
 }

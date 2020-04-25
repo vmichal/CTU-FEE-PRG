@@ -1,3 +1,6 @@
-*/.vs
+.vs
 *.elf
 *.exe
+*.out
+*.zip
+

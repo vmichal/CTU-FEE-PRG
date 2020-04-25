@@ -5,8 +5,10 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+typedef void * queue_elem_t;
+
 /* Queue structure which holds all necessary data */
-typedef struct {
+typedef struct queue_t {
 
     /* Positions of read and write pointers within the buffer. Their values are not
     kept within the range 0..capacity as normal, instead they are free to grow 
@@ -20,7 +22,7 @@ typedef struct {
     /* Size of allocated buffer. */
     unsigned int capacity;
 
-    void** data;
+    queue_elem_t* data;
 } queue_t;
 
 /* creates a new queue with a given size */
@@ -33,28 +35,28 @@ void delete_queue(queue_t* queue);
  * inserts a reference to the element into the queue
  * returns: true on success; false otherwise
  */
-bool push_to_queue(queue_t* queue, void* data);
+bool push_to_queue(queue_t* queue, queue_elem_t data);
 
 /*
  * gets the first element from the queue and removes it from the queue
  * returns: the first element on success; NULL otherwise
  */
-void* pop_from_queue(queue_t* queue);
+queue_elem_t pop_from_queue(queue_t* queue);
 
 /*
  * gets idx-th element from the queue
  * returns the element that will be popped after idx calls of the pop_from_queue()
  * returns: the idx-th element on success; NULL otherwise
  */
-void* get_from_queue(queue_t* queue, int idx);
+queue_elem_t get_from_queue(queue_t const* queue, int idx);
 
 /* gets number of stored elements */
-int get_queue_size(queue_t* queue);
+int get_queue_size(queue_t const* queue);
 
-/* Returns true iff the given queu holds no elements. */
-bool queue_empty(queue_t* queue);
+/* Returns true iff the given queue holds no elements. */
+bool queue_empty(queue_t const* queue);
 
-/* Returns true iff the given queue cannot contain any more elements. */
-bool queue_full(queue_t* queue);
+/* Returns true iff the given queue's allocated memory cannot hold any more elements. */
+bool queue_full(queue_t const* queue);
 
 #endif /* QUEUE_H */

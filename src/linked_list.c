@@ -96,6 +96,9 @@ bool insert(elem_t const entry) {
 	++global_list.size;
 
 	node* const new_node = (node*)malloc(sizeof(node));
+	if (!new_node) {
+		return false;
+	}
 	new_node->data = entry;
 	new_node->next = NULL;
 

@@ -1,4 +1,4 @@
-#include "queue.h"
+#include "ringbuffer.h"
 
 #ifdef __cpluscplus
 constexpr int QUEUE_GROW_COEF = 2;

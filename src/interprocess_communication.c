@@ -190,8 +190,8 @@ they are correct, because the assignment lacks any information regarding this to
 
 One stream is "me in, module out", the other is "me out, module in".
 */
-const char* const module_input_path = "/tmp/prga-hw08.in";
-const char* const module_output_path = "/tmp/prga-hw08.out";
+const char* const default_module_input_path = "/tmp/prga-hw08.in";
+const char* const default_module_output_path = "/tmp/prga-hw08.out";
 
 /*How often the blinking period shall be estimated. */
 int const estimation_period_ms = 5 * 1000;
@@ -272,8 +272,8 @@ static bool set_file_nonblocking(FILE* const ptr) {
 int main(int argc, char** argv) {
 
 	FILE* const tty = stdin;
-	FILE* const module_output = fopen(module_output_path, "r");
-	FILE* const module_input = fopen(module_input_path, "w");
+	FILE* const module_output = fopen(default_module_output_path, "r");
+	FILE* const module_input = fopen(default_module_input_path, "w");
 
 	/* Enable non-blocking mode for both stdin as well as input from the module. */
 	assert(module_input && module_output && tty);
@@ -388,6 +388,10 @@ int main(int argc, char** argv) {
 	delete_queue(commands);
 	terminal_raw_mode(false);
 	printf("\n\n");
+
+	//tty is not freed, it's alias to stdin
+	fclose(module_input);
+	fclose(module_output);
 
 	assert(0 == pthread_join(estimation_thread, NULL));
 	assert(0 == pthread_mutex_destroy(&shared_data.mutex));

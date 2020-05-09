@@ -190,25 +190,24 @@ they are correct, because the assignment lacks any information regarding this to
 
 One stream is "me in, module out", the other is "me out, module in".
 */
-const char* const module_input_path = "/tmp/prga-hw08.out";
-const char* const module_output_path = "/tmp/prga-hw08.in";
+const char* const module_input_path = "/tmp/prga-hw08.in";
+const char* const module_output_path = "/tmp/prga-hw08.out";
 
 /*How often the blinking period shall be estimated. */
 int const estimation_period_ms = 5 * 1000;
 
 typedef struct {
-	bool LED_active; //true in between 's' and 'e' commands
-	bool LED_on; //true iff last received update was 'x'
+	bool LED_on; //true iff last received update was 'x' or an acknowledge for 's' was received
 
 	//number of rising edges in LED activity. Cleared by estimation thread
-	int rise_counter;
-	volatile int period; //estimated by timing thread every estimation_period
+	int volatile rise_counter;
+	int volatile period; //estimated by timing thread every estimation_period
 
 } module;
 
 typedef struct {
 
-	volatile bool quit;
+	bool volatile quit;
 
 	module* module;
 	pthread_mutex_t mutex; //mutex locked by main and estimation thread
@@ -291,13 +290,13 @@ int main(int argc, char** argv) {
 	push_to_queue(expected_acks, 'i'); //module shall send 'i' during initialization
 	push_to_queue(commands, ' '); //space so that received ACK 'i' has a command to pair to
 
-	module module_data = { .LED_active = false, .LED_on = false, .rise_counter = 0, .period = 0 };
+	module module_data = { .LED_on = false, .rise_counter = 0, .period = 0 };
 	shared_data_t shared_data = { .quit = false, .module = &module_data };
-	pthread_mutex_init(&shared_data.mutex, NULL);
+	assert(0 == pthread_mutex_init(&shared_data.mutex, NULL));
 
 	//Start the period estimating thread
 	pthread_t estimation_thread;
-	pthread_create(&estimation_thread, NULL, &estimation_thread_main, &shared_data);
+	assert(0 == pthread_create(&estimation_thread, NULL, &estimation_thread_main, &shared_data));
 
 	//Variables storing last successfully sent and recieved chars.
 	char last_sent = ' ';
@@ -327,7 +326,7 @@ int main(int argc, char** argv) {
 			push_to_queue(expected_acks, 'b');
 			break;
 		default:
-			fprintf(stderr, "\nCommand '%c' is not recognized! Ignored!\n", command);
+			fprintf(stderr, "\nCommand '%c' is not recognized! Ignored.\n", command);
 			command_valid = false;
 		}
 		//If the read character was actually a command, send it to the module 
@@ -348,13 +347,11 @@ int main(int argc, char** argv) {
 			//ignore empty read
 		}
 		else if (ack == 'x' || ack == 'o') { //periodical update of LED state
-			assert(module_data.LED_active);
 			pthread_mutex_lock(&shared_data.mutex);
-			assert((ack == 'o') == module_data.LED_on);
+			module_data.LED_on = ack == 'x';
 			if (ack == 'x') {
 				++module_data.rise_counter;
 			}
-			module_data.LED_on = !module_data.LED_on;
 			pthread_mutex_unlock(&shared_data.mutex);
 		}
 		else if (get_queue_size(expected_acks) == 0) {
@@ -368,8 +365,10 @@ int main(int argc, char** argv) {
 			int const corresponding_command = get_from_queue(commands, 0);
 
 			if (ack == 'a' && (corresponding_command == 's' || corresponding_command == 'e')) {
-				module_data.LED_active = corresponding_command == 's'; //switch LED state
-				module_data.LED_on = false;
+				module_data.LED_on = corresponding_command == 's'; //switch LED state
+			}
+			else if (ack == 'b') { //IF module confirmed end of communication, quit
+				shared_data.quit = true;
 			}
 			pop_from_queue(expected_acks);
 			pop_from_queue(commands);
@@ -377,9 +376,9 @@ int main(int argc, char** argv) {
 
 		/*Finally update the terminal.*/
 		printf("\rLED %3s send : '%c' received : '%c', T = %4d ms, ticker = %4d",
-			module_data.LED_active ? "on" : "off", last_sent, last_recieved, module_data.period, module_data.rise_counter);
+			module_data.LED_on ? "on" : "off", last_sent, last_recieved, module_data.period, module_data.rise_counter);
 	}
-	if (get_queue_size(expected_acks) > 0) { //Print informative message if some commands did not receive ack
+	if (get_queue_size(expected_acks) > 0) { //Print message if some commands did not receive ack yet
 		fprintf(stderr, "Remaining %d acknowledgements!\n\r", get_queue_size(expected_acks));
 	}
 
@@ -390,7 +389,8 @@ int main(int argc, char** argv) {
 	terminal_raw_mode(false);
 	printf("\n\n");
 
-	pthread_join(estimation_thread, NULL);
+	assert(0 == pthread_join(estimation_thread, NULL));
+	assert(0 == pthread_mutex_destroy(&shared_data.mutex));
 	return EXIT_SUCCESS;
 }
 

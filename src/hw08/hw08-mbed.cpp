@@ -1,5 +1,5 @@
 /*
-* hw08 
+* hw08
 * Vojtìch Michal
 * Compilable with C++14 standard
 */
@@ -55,15 +55,20 @@ namespace {
 			1000_ms, 500_ms, 400_ms, 300_ms, 200_ms, 100_ms, 50_ms
 		} };
 
-	struct period_manager {
-	private:
+	class period_manager {
 
 		volatile decltype(periods)::const_iterator iterator_ = periods.begin();
-		Duration lastPress_ = Duration::now();
+		Duration lastChange_ = Duration::now();
+		volatile bool pressPending_;
 
 	public:
 		void release() {
-			if (Duration::now() - lastPress_ < longPressTime) {
+			if (!pressPending_) {
+				return; //Bounce effect protection
+			}
+			pressPending_ = false;
+			Duration const timePressed = Duration::now() - lastChange_;
+			if (timePressed < longPressTime) {
 				//advance iterator on short press
 				if (iterator_ != periods.end()) {
 					++iterator_;
@@ -72,9 +77,18 @@ namespace {
 			else { //reset the period to max on extended press
 				iterator_ = periods.begin();
 			}
+
+			lastChange_ = Duration::now();
 		}
 
-		void press() { lastPress_ = Duration::now(); }
+		void press() { 
+			if (Duration::now() - lastChange_ < 50_ms) {
+				return; //Bounce effect protection
+			}
+
+			pressPending_ = true;
+			lastChange_ = Duration::now(); 
+		}
 
 		bool paused() { return iterator_ == periods.end(); }
 

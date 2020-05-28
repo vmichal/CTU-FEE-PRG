@@ -287,8 +287,10 @@ int main(int argc, char** argv) {
 	ACKs in order they are expected. */
 	queue_t* const expected_acks = create_queue(32);
 	queue_t* const commands = create_queue(32);
+	/* Apparently there is no initialization signal from module
 	push_to_queue(expected_acks, 'i'); //module shall send 'i' during initialization
 	push_to_queue(commands, ' '); //space so that received ACK 'i' has a command to pair to
+	*/
 
 	module module_data = { .LED_on = false, .rise_counter = 0, .period = 0 };
 	shared_data_t shared_data = { .quit = false, .module = &module_data };
@@ -367,7 +369,7 @@ int main(int argc, char** argv) {
 			if (ack == 'a' && (corresponding_command == 's' || corresponding_command == 'e')) {
 				module_data.LED_on = corresponding_command == 's'; //switch LED state
 			}
-			else if (ack == 'b') { //IF module confirmed end of communication, quit
+			else if (ack == 'b') { //If module confirmed end of communication, quit
 				shared_data.quit = true;
 			}
 			pop_from_queue(expected_acks);

@@ -1,4 +1,3 @@
-#if 1
 /*
 *
 * Implementation of ring buffer because Brute does not support custom makefiles
@@ -185,15 +184,18 @@ queue_elem_t pop_from_queue(queue_t* const queue) {
 #include <fcntl.h>
 #include <threads.h>
 #include <unistd.h>
+#include <termios.h>
+#include <string.h>
 
 /*How often the blinking period shall be estimated. */
 int const estimation_period_ms = 5 * 1000;
+speed_t const default_communication_speed = B115200;
 
 typedef struct {
 	bool LED_on; //true iff last received update was 'x' or an acknowledge for 's' was received
 
-	//number of rising edges in LED activity. Cleared by estimation thread
-	int volatile rise_counter;
+	//number of rising and falling edges in LED activity. Cleared by estimation thread
+	int volatile edge_counter;
 	int volatile period; //estimated by timing thread every estimation_period
 
 } module;
@@ -216,14 +218,14 @@ int estimation_thread_main(void* data_as_void) {
 		mtx_lock(&data->mutex);
 
 		//recalculate period estimation and clear counter of rising edges
-		if (data->module->rise_counter == 0) {
+		if (data->module->edge_counter == 0) {
 			data->module->period = 0;
 		}
-		else {
-			data->module->period = (estimation_period_ms/2) / data->module->rise_counter;
+		else { //Based on the measurements during 5s time window, estimate the frequency of blinking
+			data->module->period = (estimation_period_ms * 2) / data->module->edge_counter;
 		}
 
-		data->module->rise_counter = 0;
+		data->module->edge_counter = 0;
 
 		mtx_unlock(&data->mutex);
 		usleep(estimation_period_ms * 1000);
@@ -239,8 +241,10 @@ static void terminal_raw_mode(bool raw) {
 	}
 
 
-	static struct termios current, old;
-	tcgetattr(STDIN_FILENO, &current);
+	static struct termios old;
+	struct termios current;
+
+	tcgetattr(fileno(stdin), &current);
 	if (raw) {
 		old = current;
 		cfmakeraw(&current);
@@ -256,9 +260,54 @@ static void terminal_raw_mode(bool raw) {
 
 
 /* Switch the given file pointer to nonblocking mode.*/
-static bool set_file_nonblocking(FILE* const ptr) {
-	int const fd = fileno(ptr);
+static bool set_file_nonblocking(int const fd) {
 	return fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+}
+
+static void configure_serial(int const fd) {
+	struct termios termios;
+	memset(&termios, 0, sizeof termios);
+
+	// Read in existing settings, and handle any error
+	assert(tcgetattr(fd, &termios) == 0);
+
+	termios.c_cflag &= ~PARENB; // Clear parity bit, disabling parity (most common)
+	termios.c_cflag &= ~CSTOPB; // Clear stop field, only one stop bit used in communication (most common)
+	termios.c_cflag &= ~CSIZE;
+	termios.c_cflag |= CS8; // 8 bits per byte (most common)
+	termios.c_cflag |= CRTSCTS; // Disable RTS/CTS hardware flow control (most common)
+	termios.c_cflag |= CREAD | CLOCAL; // Turn on READ & ignore ctrl lines (CLOCAL = 1)
+
+	termios.c_lflag &= ~ECHONL; // Disable new-line echo
+	termios.c_lflag &= ~ECHO; // Disable echo
+	termios.c_lflag &= ~ECHOE; // Disable erasure
+	termios.c_lflag &= ~ISIG; // Disable interpretation of INTR, QUIT and SUSP
+	termios.c_iflag &= ~(IXON | IXOFF | IXANY); // Turn off s/w flow ctrl
+	termios.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL); // Disable any special handling of received bytes
+	termios.c_lflag &= ~ICANON;
+	termios.c_cflag &= ~OPOST;
+
+	termios.c_cc[VTIME] = 1;
+	termios.c_cc[VMIN] = 0;
+
+	termios.c_oflag &= ~ONLCR; // Prevent conversion of newline to carriage return/line feed
+
+	// Set in/out baud rate to be 9600
+	cfsetispeed(&termios, default_communication_speed);
+	cfsetospeed(&termios, default_communication_speed);
+
+	// Save tty settings, also checking for error
+
+	assert(tcsetattr(fd, TCSANOW, &termios) == 0);
+}
+
+int read_char(int const fd) {
+	char result;
+	return read(fd, &result, 1) < 0 ? -1 : result;
+}
+
+void write_char(int const fd, char c) {
+	write(fd, &c, 1);
 }
 
 
@@ -266,13 +315,13 @@ int main(int argc, char** argv) {
 
 	assert(argc == 2);
 
-	FILE* const tty = stdin;
-	FILE* const serial = fopen(argv[1], "r+");
+	int const serial_port = open(argv[1], O_RDWR | O_NOCTTY | O_SYNC);
+	assert(serial_port != -1);
 
 	/* Enable non-blocking mode for both stdin as well as input from the module. */
-	assert(serial && tty);
-	assert(0 == set_file_nonblocking(tty));
-	assert(0 == set_file_nonblocking(serial));
+	assert(0 == set_file_nonblocking(fileno(stdin)));
+	assert(0 == set_file_nonblocking(serial_port));
+	configure_serial(serial_port);
 
 	terminal_raw_mode(true);
 
@@ -284,7 +333,7 @@ int main(int argc, char** argv) {
 	push_to_queue(expected_acks, 'i'); //module shall send 'i' during initialization
 	push_to_queue(commands, ' '); //space so that received ACK 'i' has a command to pair to
 
-	module module_data = { .LED_on = false, .rise_counter = 0, .period = 0 };
+	module module_data = { .LED_on = false, .edge_counter = 0, .period = 0 };
 	shared_data_t shared_data = { .quit = false, .module = &module_data };
 	assert(0 == mtx_init(&shared_data.mutex, mtx_plain));
 
@@ -299,9 +348,8 @@ int main(int argc, char** argv) {
 	/*Main loop is based on the same variable as estimating thread.
 	Should it switch to false, both threads will exit loops. */
 	for (; !shared_data.quit;) {
-
-		//Character read from the stdin. May be -1 if nothing was readable (std is in nonblocking mode).
-		int const command = fgetc(tty);
+		//Character read from the stdin. May be -1 if nothing was readable (stdin is in nonblocking mode).
+		int const command = fgetc(stdin);
 
 		bool command_valid = command != -1 && command != 'q';
 		switch (command) {
@@ -325,27 +373,25 @@ int main(int argc, char** argv) {
 		}
 		//If the read character was actually a command, send it to the module 
 		if (command_valid) {
-			fputc(command, serial);
-			fflush(serial);
+			write_char(serial_port, command);
 			push_to_queue(commands, command);
 
 			last_sent = command;
 		}
 
 		//Character read from pipe, sent by module. May be -1 if nothing was pending
-		int const ack = fgetc(serial);
+		int const ack = read_char(serial_port);
 
 		last_recieved = ack == -1 ? last_recieved : ack;
 
 		if (ack == -1) {
 			//ignore empty read
+			continue;
 		}
 		else if (ack == 'x' || ack == 'o') { //periodical update of LED state
 			mtx_lock(&shared_data.mutex);
 			module_data.LED_on = ack == 'x';
-			if (ack == 'x') {
-				++module_data.rise_counter;
-			}
+			++module_data.edge_counter;
 			mtx_unlock(&shared_data.mutex);
 		}
 		else if (get_queue_size(expected_acks) == 0) {
@@ -361,21 +407,20 @@ int main(int argc, char** argv) {
 			if (ack == 'a' && (corresponding_command == 's' || corresponding_command == 'e')) {
 				module_data.LED_on = corresponding_command == 's'; //switch LED state
 			}
-			else if (ack == 'b') { //IF module confirmed end of communication, quit
+			else if (ack == 'b') { //If module confirmed end of communication, quit
 				shared_data.quit = true;
 			}
 			pop_from_queue(expected_acks);
 			pop_from_queue(commands);
 		}
 
-		/*Finally update the terminal.*/
+		/*Finally update the terminal if needed.*/
 		printf("\rLED %3s send : '%c' received : '%c', T = %4d ms, ticker = %4d",
-			module_data.LED_on ? "on" : "off", last_sent, last_recieved, module_data.period, module_data.rise_counter);
+			module_data.LED_on ? "on" : "off", last_sent, last_recieved, module_data.period, module_data.edge_counter);
 	}
 	if (get_queue_size(expected_acks) > 0) { //Print message if some commands did not receive ack yet
 		fprintf(stderr, "Remaining %d acknowledgements!\n\r", get_queue_size(expected_acks));
 	}
-
 	/*Cleanup resources first and postpone thread joining. There are up to 5s of
 	delay, since the estimation thread has to wake up first */
 	delete_queue(expected_acks);
@@ -384,87 +429,9 @@ int main(int argc, char** argv) {
 	printf("\n\n");
 
 	//tty is not freed, it's alias to stdin
-	fclose(serial);
+	close(serial_port);
 
 	assert(0 == thrd_join(estimation_thread, NULL));
 	mtx_destroy(&shared_data.mutex);
 	return EXIT_SUCCESS;
 }
-
-#else
-
-// C library headers
-#include <stdio.h>
-#include <string.h>
-
-// Linux headers
-#include <fcntl.h> // Contains file controls like O_RDWR
-#include <errno.h> // Error integer and strerror() function
-#include <termios.h> // Contains POSIX terminal control definitions
-#include <unistd.h> // write(), read(), close()
-
-int main() {
-
-	// Open the serial port. Change device path as needed (currently set to an standard FTDI USB-UART cable type device)
-	FILE* const serial_port = fopen("/dev/ttyS3", "r+");
-
-	// Create new termios struc, we call it 'tty' for convention
-	struct termios tty;
-	memset(&tty, 0, sizeof tty);
-
-	// Read in existing settings, and handle any error
-	if (tcgetattr(fileno(serial_port), &tty) != 0) {
-		printf("Error %i from tcgetattr: %s\n", errno, strerror(errno));
-	}
-
-	tty.c_cflag &= ~PARENB; // Clear parity bit, disabling parity (most common)
-	tty.c_cflag &= ~CSTOPB; // Clear stop field, only one stop bit used in communication (most common)
-	tty.c_cflag |= CS8; // 8 bits per byte (most common)
-	tty.c_cflag &= ~CRTSCTS; // Disable RTS/CTS hardware flow control (most common)
-	tty.c_cflag |= CREAD | CLOCAL; // Turn on READ & ignore ctrl lines (CLOCAL = 1)
-
-	tty.c_lflag &= ~ICANON;
-	tty.c_lflag &= ~ECHO; // Disable echo
-	tty.c_lflag &= ~ECHOE; // Disable erasure
-	tty.c_lflag &= ~ECHONL; // Disable new-line echo
-	tty.c_lflag &= ~ISIG; // Disable interpretation of INTR, QUIT and SUSP
-	tty.c_iflag &= ~(IXON | IXOFF | IXANY); // Turn off s/w flow ctrl
-	tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL); // Disable any special handling of received bytes
-
-	tty.c_oflag &= ~OPOST; // Prevent special interpretation of output bytes (e.g. newline chars)
-	tty.c_oflag &= ~ONLCR; // Prevent conversion of newline to carriage return/line feed
-	// tty.c_oflag &= ~OXTABS; // Prevent conversion of tabs to spaces (NOT PRESENT ON LINUX)
-	// tty.c_oflag &= ~ONOEOT; // Prevent removal of C-d chars (0x004) in output (NOT PRESENT ON LINUX)
-
-	tty.c_cc[VTIME] = 10;    // Wait for up to 1s (10 deciseconds), returning as soon as any data is received.
-	tty.c_cc[VMIN] = 0;
-
-	// Set in/out baud rate to be 9600
-	cfsetispeed(&tty, B115200);
-	cfsetospeed(&tty, B115200);
-
-	// Save tty settings, also checking for error
-	/*
-	if (tcsetattr(fileno(serial_port), TCSANOW, &tty) != 0) {
-		printf("Error %i from tcsetattr: %s\n", errno, strerror(errno));
-	}
-	*/
-
-	for (int i = 0; i < 10; ++i) {
-
-		// Write to serial port
-		fputc('e', serial_port);
-		fflush(serial_port);
-		usleep(1000 * 20);
-
-		fputc('s', serial_port);
-		fflush(serial_port);
-		usleep(20 * 1000);
-
-		printf("Received message: %c\n", fgetc(serial_port));
-		printf("Received message: %c\n", fgetc(serial_port));
-	}
-
-	fclose(serial_port);
-}
-#endif

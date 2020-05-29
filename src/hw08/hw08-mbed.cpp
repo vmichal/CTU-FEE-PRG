@@ -50,6 +50,7 @@ namespace {
 
 	//Minimal duration of button press before blinking period is reset
 	constexpr auto longPressTime = 200_ms;
+	constexpr auto debounceTimeout = 100_ms;
 	/* Array of selected periods*/
 	constexpr static std::array<Duration, 7> periods{ {
 			1000_ms, 500_ms, 400_ms, 300_ms, 200_ms, 100_ms, 50_ms
@@ -82,7 +83,7 @@ namespace {
 		}
 
 		void press() { 
-			if (Duration::now() - lastChange_ < 50_ms) {
+			if (Duration::now() - lastChange_ < debounceTimeout) {
 				return; //Bounce effect protection
 			}
 

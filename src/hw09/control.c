@@ -221,7 +221,7 @@ int estimation_thread_main(void* data_as_void) {
 		if (data->module->edge_counter == 0) {
 			data->module->period = 0;
 		}
-		else { //Based on the measurements during 5s time window, estimate the frequency of blinking
+		else { //Based on the measurements during 5s window, estimate the frequency of blinking
 			data->module->period = (estimation_period_ms * 2) / data->module->edge_counter;
 		}
 
@@ -272,7 +272,7 @@ static void configure_serial(int const fd) {
 	assert(tcgetattr(fd, &termios) == 0);
 
 	termios.c_cflag &= ~PARENB; // Clear parity bit, disabling parity (most common)
-	termios.c_cflag &= ~CSTOPB; // Clear stop field, only one stop bit used in communication (most common)
+	termios.c_cflag &= ~CSTOPB;
 	termios.c_cflag &= ~CSIZE;
 	termios.c_cflag |= CS8; // 8 bits per byte (most common)
 	termios.c_cflag |= CRTSCTS; // Disable RTS/CTS hardware flow control (most common)
@@ -283,7 +283,7 @@ static void configure_serial(int const fd) {
 	termios.c_lflag &= ~ECHOE; // Disable erasure
 	termios.c_lflag &= ~ISIG; // Disable interpretation of INTR, QUIT and SUSP
 	termios.c_iflag &= ~(IXON | IXOFF | IXANY); // Turn off s/w flow ctrl
-	termios.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL); // Disable any special handling of received bytes
+	termios.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL); 
 	termios.c_lflag &= ~ICANON;
 	termios.c_cflag &= ~OPOST;
 
@@ -329,9 +329,9 @@ int main(int argc, char** argv) {
 	is safe even if the module would delay sending acknowledgements. It is still necessary to send
 	ACKs in order they are expected. */
 	queue_t* const expected_acks = create_queue(32);
-	queue_t* const commands = create_queue(32);
+	queue_t* const sent_commands = create_queue(32);
 	push_to_queue(expected_acks, 'i'); //module shall send 'i' during initialization
-	push_to_queue(commands, ' '); //space so that received ACK 'i' has a command to pair to
+	push_to_queue(sent_commands, ' '); //space so that received ACK 'i' has a command to pair to
 
 	module module_data = { .LED_on = false, .edge_counter = 0, .period = 0 };
 	shared_data_t shared_data = { .quit = false, .module = &module_data };
@@ -374,7 +374,7 @@ int main(int argc, char** argv) {
 		//If the read character was actually a command, send it to the module 
 		if (command_valid) {
 			write_char(serial_port, command);
-			push_to_queue(commands, command);
+			push_to_queue(sent_commands, command);
 
 			last_sent = command;
 		}
@@ -402,7 +402,7 @@ int main(int argc, char** argv) {
 				, ack, get_from_queue(expected_acks, 0));
 		}
 		else { //successfully received an acknowledgement, that we actually expected
-			int const corresponding_command = get_from_queue(commands, 0);
+			int const corresponding_command = get_from_queue(sent_commands, 0);
 
 			if (ack == 'a' && (corresponding_command == 's' || corresponding_command == 'e')) {
 				module_data.LED_on = corresponding_command == 's'; //switch LED state
@@ -411,12 +411,13 @@ int main(int argc, char** argv) {
 				shared_data.quit = true;
 			}
 			pop_from_queue(expected_acks);
-			pop_from_queue(commands);
+			pop_from_queue(sent_commands);
 		}
 
 		/*Finally update the terminal if needed.*/
-		printf("\rLED %3s send : '%c' received : '%c', T = %4d ms, ticker = %4d",
-			module_data.LED_on ? "on" : "off", last_sent, last_recieved, module_data.period, module_data.edge_counter);
+		printf("\rLED %3s send : '%c' received : '%c', T = %4d ms, ticker = %4d"
+			, module_data.LED_on ? "on" : "off", last_sent, last_recieved
+			, module_data.period, module_data.edge_counter);
 	}
 	if (get_queue_size(expected_acks) > 0) { //Print message if some commands did not receive ack yet
 		fprintf(stderr, "Remaining %d acknowledgements!\n\r", get_queue_size(expected_acks));
@@ -424,7 +425,7 @@ int main(int argc, char** argv) {
 	/*Cleanup resources first and postpone thread joining. There are up to 5s of
 	delay, since the estimation thread has to wake up first */
 	delete_queue(expected_acks);
-	delete_queue(commands);
+	delete_queue(sent_commands);
 	terminal_raw_mode(false);
 	printf("\n\n");
 

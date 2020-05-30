@@ -21,9 +21,9 @@ int width = 0, height = 0;
 int precision = 0;
 int current_chunk = -1;
 
-my_complex top_left = { -1.6, 1.1 }, bot_right = { 1.6, -1.1 };
+my_complex top_left = { 0.0,0.0 }, bot_right = { 0.0,0.0 };
 
-my_complex constant = { -0.4, 0.6 };
+my_complex constant = { 0.0, 0.0 };
 
 int chunk_row() { return current_chunk / chunks_in_row; }
 int chunk_col() { return current_chunk % chunks_in_row; }
@@ -36,13 +36,15 @@ double chunk_height() { return height / chunks_in_col; }
 
 int chunk_count() { return chunks_in_col * chunks_in_row; }
 
-void fractal_initialize(int w, int h, int pr, int columns, int rows) {
+void fractal_initialize(int w, int h, int pr, int columns, int rows,
+	my_complex upper_left, my_complex lower_right, my_complex c) {
 	xwin_init(w, h);
 	fractal_set_image_size(w, h);
 	fractal_set_screen_division(rows, columns);
+	fractal_set_edge(bound_topleft, upper_left);
+	fractal_set_edge(bound_botright, lower_right);
+	fractal_set_constant(c);
 	precision = pr;
-
-
 }
 
 void fractal_cleanup() {
@@ -75,21 +77,20 @@ bool fractal_set_image_size(int w, int h) {
 	return true;
 }
 
-void fractal_add_point(int row, int col, int iterations) {
-
-	frame_buffer[3 * (row * width + col) + 0] = red_component(iterations, precision);
-	frame_buffer[3 * (row * width + col) + 1] = green_component(iterations, precision);
-	frame_buffer[3 * (row * width + col) + 2] = blue_component(iterations, precision);
-
+void fractal_write_pixel(int row, int col, int r, int g, int b) {
+	frame_buffer[3 * (row * width + col) + 0] = r;
+	frame_buffer[3 * (row * width + col) + 1] = g;
+	frame_buffer[3 * (row * width + col) + 2] = b;
 }
 
-void fractal_add_point_in_chunk(int chunk, int relative_col, int relative_row, int iterations) {
+void fractal_add_point(int chunk, int relative_col, int relative_row, int iterations) {
 	assert(current_chunk == chunk);
 
 	int const row = chunk_row() * chunk_height() + relative_row;
 	int const col = chunk_col() * chunk_width() + relative_col;
 
-	fractal_add_point(row, col, iterations);
+	fractal_write_pixel(row, col, red_component(iterations, precision),
+		green_component(iterations, precision), blue_component(iterations, precision));
 }
 
 void fractal_finish_chunk() {
@@ -179,7 +180,6 @@ void fractal_set_all_chunks_unseen() {
 }
 
 void fractal_compute_locally() {
-	fractal_set_all_chunks_unseen();
 	while (!fractal_finished()) {
 		msg_compute data = fractal_get_next_chunk();
 		for (int row = 0; row < data.n_im; ++row) {
@@ -187,7 +187,7 @@ void fractal_compute_locally() {
 				my_complex point;
 				point.re = data.re + col * pixel_width();
 				point.im = data.im - row * pixel_height();
-				fractal_add_point_in_chunk(data.cid, col, row, convergence_test(point, constant, precision));
+				fractal_add_point(data.cid, col, row, convergence_test(point, constant, precision));
 			}
 		}
 		fractal_finish_chunk();
@@ -218,3 +218,101 @@ void fractal_set_selection_policy(enum selection_policy p) {
 	selection_policy = p;
 }
 
+void fractal_draw_red_line(int x1, int y1, int x2, int y2) {
+	assert((x1 == x2) != (y1 == y2));
+
+	if (x1 == x2) {
+		int min = y1, max = y2;
+		if (y1 > y2) {
+			min = y2; max = y1;
+		}
+
+		for (int y = min; y < max; ++y) {
+			fractal_write_pixel(y, x1, 255, 255, 255);
+		}
+
+	}
+	else {
+		int min = x1, max = x2;
+		if (x1 > x2) {
+			min = x2; max = x1;
+		}
+
+		for (int x = min; x < max; ++x) {
+			fractal_write_pixel(x, y1, 255, 255, 255);
+		}
+	}
+
+}
+
+void fractal_set_edge(enum boundary b, my_complex new_value) {
+	if (b == bound_topleft) {
+		top_left = new_value;
+	}
+	else {
+		bot_right = new_value;
+	}
+}
+
+my_complex fractal_get_edge(enum boundary b) {
+	return b == bound_topleft ? top_left : bot_right;
+}
+
+my_complex fractal_get_center() {
+	my_complex middle = add(top_left, bot_right);
+	return scalar_mul(middle, 0.5f);
+}
+
+my_complex fractal_get_constant() {
+
+	return constant;
+}
+
+void fractal_set_constant(my_complex c) {
+	constant = c;
+}
+
+
+
+#include <stdio.h>
+#include <fts.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <err.h>
+
+int count_ppm_files() {
+
+	int count = 0;
+
+	char* path[2] = { ".", NULL };
+	FTS* ftsp = fts_open(path, FTS_COMFOLLOW | FTS_LOGICAL | FTS_NOCHDIR, NULL);
+	assert(ftsp);
+	assert(fts_children(ftsp, 0));
+
+	for (FTSENT* entity; (entity = fts_read(ftsp)) != NULL;) {
+		if (strstr(entity->fts_name, "fractal") && strstr(entity->fts_name, "ppm")) {
+			++count;
+		}
+	}
+
+	fts_close(ftsp);
+	return count;
+}
+
+
+bool save_to_ppm() {
+
+	int const count = count_ppm_files();
+	char buffer[128];
+	memset(buffer, 0, sizeof buffer);
+	sprintf(buffer, "fractal%d.ppm", count);
+	FILE* const output = fopen(buffer, "wb");
+	assert(output);
+	fprintf(output, "P6\n%d\n%d\n255\n", width, height);
+
+
+	fwrite(frame_buffer, 3, width * height, output);
+	fclose(output);
+	fprintf(stderr, "INFO: Saved file as %s\r\n", buffer);
+	return true;
+}

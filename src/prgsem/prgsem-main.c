@@ -21,6 +21,7 @@
 #include "protocol.h"
 #include "ringbuffer.h"
 #include "fractal_drawer.h"
+#include "juliaset.h"
 
 char const* const basic_stdin_help = "Basic help:\r\n"
 "h - Print this help message.\r\n"
@@ -33,10 +34,13 @@ char const* const basic_stdin_help = "Basic help:\r\n"
 "i - Transmit current settings to the connected worker module.\r\n"
 "s - Start (or possibly resume if it was only interrupted) the computation.\r\n"
 "\t\tImmediatelly draws intermediate results to the screen.\r\n"
+"e - Export to ppm.\r\n"
 "\r\n"
 "Submenus:\r\n"
 "b - Configure the communication baudrate.\r\n"
-"d - Configure drawing process.\r\n";
+"d - Configure drawing process.\r\n"
+"f - Move freely around the picture.\r\n"
+"x - Move constant.\r\n";
 
 char const* const baudrate_help = "Choose one of the following baudrates for communication.\r\n"
 "1 - 110\r\n"
@@ -53,15 +57,43 @@ char const* const drawing_config_help = "Drawing configuration.\r\n"
 "\r\n"
 "Chunk selection policy, e.g. by what criteria are unfinished chunks selected for computation:\r\n"
 "    r - Random - simply random...\r\n"
-"    s - Sequential - topmost and then leftmost empty chunk is selected.\r\n";
+"    s - Sequential - topmost and then leftmost empty chunk is selected.\r\n"
+"    c - Centered - prefer chunks that are closer to the middle.\r\n";
+
+char const* const free_move_help = "Free move.\r\n"
+"q  return to the main menu\r\n"
+"r  restore default bounds\r\n"
+"+  zoom in\r\n"
+"-  zoom out\r\n"
+"w  move up\r\n"
+"a  move left\r\n"
+"s  move down\r\n"
+"d  move right\r\n";
+
+char const* const constant_move_help = "Move constant.\r\n"
+"q  return to the main menu\r\n"
+"r  restore default constant [-.4, .6]\r\n"
+"w  move up\r\n"
+"a  move left\r\n"
+"s  move down\r\n"
+"d  move right\r\n";
 
 //Default arguments
+bool const cpu_boost = true;
 
-int const default_width = 1080;
-int const default_height = 720;
-int const default_precision = 60;
+float const zoom_coefficient = 0.8f;
+float const move_coeeficient = 0.2f;
+
+int const default_width = 420;
+int const default_height = 280;
+int const default_precision = 40;
 int const default_chunk_rows = 10;
-int const default_chunk_cols = 23;
+int const default_chunk_cols = 10;
+
+my_complex const max_top_left = { -1.6, 1.1 }, max_bot_right = { 1.6, -1.1 };
+my_complex const default_fractal_constant = { 0.26, 0.0 };
+my_complex const sensible_top_left = {};
+
 //Ring buffer containing incoming messages
 queue_t* messages;
 
@@ -94,10 +126,12 @@ struct {
 enum tty_state {
 	tty_basic,
 	tty_baudrate_selection,
-	tty_drawing_config
+	tty_drawing_config,
+	tty_free_move,
+	tty_move_constant
 } tty_state = tty_basic;
 
-static void terminal_raw_mode(bool raw) {
+void terminal_raw_mode(bool raw) {
 	static bool is_raw = false;
 	if (is_raw == raw) {
 		return; //If the new mode is already set, no work is needed
@@ -217,9 +251,8 @@ void message_enqueue(message const* msg) {
 	write(module_data.file_descriptor, buffer, message_size(msg->type));
 }
 
-
 /* Main function for the thread reading input from the serial port. */
-int serial_input_thread() {
+static int serial_input_thread() {
 	fprintf(stderr, "INFO: Serial port listening thread started.\r\n");
 
 	uint8_t buffer[sizeof(message)];
@@ -251,7 +284,7 @@ int serial_input_thread() {
 int redrawing_thread() {
 	fprintf(stderr, "INFO: Redrawing thread started.\r\n");
 
-	int const FPS = 10; //bind to 100FPS for now
+	int const FPS = 100; //bind to 100FPS for now
 	for (; !thread_data.quit;) {
 
 		fractal_redraw();
@@ -320,6 +353,7 @@ void poll_baudrate() {
 
 }
 
+/* Encapsulate reading from stdin when the user is configuring drawing mode. */
 void poll_drawing_config() {
 
 	int const command = fgetc(stdin);
@@ -332,6 +366,11 @@ void poll_drawing_config() {
 	case 's': case 'r':
 		fractal_set_selection_policy(command == 's' ? policy_sequential : policy_random);
 		fprintf(stderr, "INFO: Selected %s policy.\r\n", command == 's' ? "sequential" : "random");
+		break;
+	case 'c':
+		fractal_set_selection_policy(policy_centered);
+		fprintf(stderr, "INFO: Selected central policy.\r\n");
+		break;
 
 	case 'q':
 		tty_state = tty_basic;
@@ -343,6 +382,157 @@ void poll_drawing_config() {
 
 }
 
+void zoom(char const op) {
+	assert(op == '+' || op == '-');
+	my_complex const middle = fractal_get_center();
+
+	my_complex top_left = sub(fractal_get_edge(bound_topleft), middle),
+		bot_right = sub(fractal_get_edge(bound_botright), middle);
+
+	float const scalar = op == '+' ? zoom_coefficient : 1 / zoom_coefficient;
+	top_left = scalar_mul(top_left, scalar);
+	bot_right = scalar_mul(bot_right, scalar);
+
+	fractal_set_edge(bound_botright, add(bot_right, middle));
+	fractal_set_edge(bound_topleft, add(top_left, middle));
+	fractal_set_all_chunks_unseen();
+	//fractal_clear_buffer();
+	fractal_compute_locally();
+}
+
+void move(char const op) {
+
+	my_complex const visible = sub(fractal_get_edge(bound_topleft),
+		fractal_get_edge(bound_botright));
+
+	my_complex dx = { fabs(visible.re), 0 };
+	my_complex dy = { 0, fabs(visible.im) };
+	dx = scalar_mul(dx, move_coeeficient);
+	dy = scalar_mul(dy, move_coeeficient);
+
+	my_complex displacement = { 0.0f,0.0f };
+	switch (op) {
+	case 'w':
+		displacement = dy;
+		break;
+	case 's':
+		displacement = negate(dy);
+		break;
+	case 'a':
+		displacement = negate(dx);
+		break;
+	case 'd':
+		displacement = dx;
+		break;
+	}
+
+	fractal_set_edge(bound_topleft, add(fractal_get_edge(bound_topleft), displacement));
+	fractal_set_edge(bound_botright, add(fractal_get_edge(bound_botright), displacement));
+	fractal_set_all_chunks_unseen();
+	//fractal_clear_buffer();
+	fractal_compute_locally();
+}
+
+/* Allows zooming to be performed. */
+void poll_free_move() {
+
+	int const command = fgetc(stdin);
+
+	if (command == -1) {
+		return; //Ignore "empty" read
+	}
+
+	switch (command) {
+	case 'r':
+		fprintf(stderr, "Restoring default bounds.\r\n");
+		fractal_set_edge(bound_topleft, max_top_left);
+		fractal_set_edge(bound_botright, max_bot_right);
+		fractal_set_all_chunks_unseen();
+		fractal_clear_buffer();
+		fractal_compute_locally();
+		break;
+	case 'q':
+		tty_state = tty_basic;
+		fprintf(stderr, "Returning to default menu.\r\n");
+		return;
+	case '+': case '-':
+		zoom(command);
+		break;
+	case 'w': case 's': case 'a': case'd':
+		move(command);
+		break;
+	default:
+		fprintf(stderr, "ERROR: This is not a valid option.\r\n");
+	}
+	my_complex const center = fractal_get_center();
+	my_complex const visible = sub(fractal_get_edge(bound_topleft),
+		fractal_get_edge(bound_botright));
+
+	fprintf(stderr, "You are now centered on [%.4f, %.4f]. ", center.re, center.im);
+	fprintf(stderr, "Visible area is a rectangle [%.4f, %.4f].\r\n"
+		, fabs(visible.re), fabs(visible.im));
+
+}
+
+/* Allows zooming to be performed. */
+void poll_move_constant() {
+
+	int const command = fgetc(stdin);
+
+	if (command == -1) {
+		return; //Ignore "empty" read
+	}
+
+	switch (command) {
+	case 'r':
+		fprintf(stderr, "Restoring default constant.\r\n");
+		fractal_set_constant(default_fractal_constant);
+		fractal_set_all_chunks_unseen();
+		fractal_compute_locally();
+		break;
+	case 'q':
+		tty_state = tty_basic;
+		fprintf(stderr, "Returning to default menu.\r\n");
+		return;
+	case 'w': case 's': case 'a': case'd': {
+
+
+		my_complex dx = { 0.001, 0 };
+		my_complex dy = { 0, 0.001 };
+
+		my_complex displacement = { 0.0f,0.0f };
+		switch (command) {
+		case 'w':
+			displacement = dy;
+			break;
+		case 's':
+			displacement = negate(dy);
+			break;
+		case 'a':
+			displacement = negate(dx);
+			break;
+		case 'd':
+			displacement = dx;
+			break;
+		}
+
+		fractal_set_constant(add(fractal_get_constant(), displacement));
+		fractal_set_all_chunks_unseen();
+		//fractal_clear_buffer();
+		fractal_compute_locally();
+		break;
+	}
+	default:
+		fprintf(stderr, "ERROR: This is not a valid option.\r\n");
+		return;
+	}
+	my_complex const center = fractal_get_constant();
+
+	fprintf(stderr, "Current position is [%.4f, %.4f].\r\n", center.re, center.im);
+
+}
+
+//Encapsulates the general puspose main menu 
 void poll_stdin() {
 	//Character read from the stdin. May be -1 if nothing was readable (stdin is in nonblocking mode).
 	int const command = fgetc(stdin);
@@ -399,13 +589,16 @@ void poll_stdin() {
 		if (module_data.state != module_idle) {
 			fprintf(stderr, "ERROR: Nucleo is already computing.\r\n");
 		}
+		else if (fractal_finished()) {
+			fprintf(stderr, "WARN: Nothing to do. You must first reset chunks.\r\n");
+		}
 		else {
 			fprintf(stderr, "INFO : Computing fractal locally.\r\n");
 			fractal_compute_locally();
 			fprintf(stderr, "INFO: Done.\r\n");
 		}
 		break;
-	case 'i': {
+	case 'i':
 		if (module_data.state == module_idle) {
 			message msg = { .type = MSG_SET_COMPUTE };
 			msg.data.set_compute = fractal_get_settings();
@@ -417,19 +610,22 @@ void poll_stdin() {
 			fprintf(stderr, "INFO: Cannot issue new command, a computation is already in progress.\r\n");
 		}
 		break;
-	}
-	case 's': {
-		if (module_data.state == module_idle) {
+
+	case 's':
+		if (module_data.state != module_idle) {
+			fprintf(stderr, "ERROR: Cannot issue command - Nucleo is already computing.\r\n");
+		}
+		else if (fractal_finished()) {
+			fprintf(stderr, "WARN: Nothing to do. You must first reset chunks.\r\n");
+		}
+		else {
 			send_message_compute();
 			module_data.state = module_starting;
 			fprintf(stderr, "INFO: Started computation.\r\n");
 		}
-		else {
-			fprintf(stderr, "INFO: Cannot issue new command, a computation is already in progress.\r\n");
-		}
 		break;
-	}
-	case 'b': {
+
+	case 'b':
 		if (module_data.state != module_idle) {
 			fprintf(stderr, "ERROR: The module must be in idle state to change baudrate.\r\n");
 		}
@@ -439,8 +635,8 @@ void poll_stdin() {
 			fprintf(stderr, baudrate_help);
 		}
 		break;
-	}
-	case 'd': {
+
+	case 'd':
 		if (module_data.state != module_idle) {
 			fprintf(stderr, "ERROR: The module must be in idle state to configure drawing.\r\n");
 		}
@@ -450,7 +646,43 @@ void poll_stdin() {
 			fprintf(stderr, drawing_config_help);
 		}
 		break;
-	}
+
+	case 'z':
+		if (module_data.state != module_idle) {
+			fprintf(stderr, "ERROR: The module must be in idle state to configure drawing.\r\n");
+		}
+		else {
+			tty_state = tty_drawing_config;
+			fprintf(stderr, "INFO: Switching to drawing configuration mode.\r\n");
+			fprintf(stderr, drawing_config_help);
+		}
+		break;
+	case 'f':
+		if (module_data.state != module_idle) {
+			fprintf(stderr, "ERROR: The module must be in idle state to enter free move.\r\n");
+		}
+		else {
+			tty_state = tty_free_move;
+			fprintf(stderr, "INFO: Switching to free move mode.\r\n");
+			fprintf(stderr, free_move_help);
+		}
+		break;
+	case 'x':
+		if (module_data.state != module_idle) {
+			fprintf(stderr, "ERROR: The module must be in idle state to move constant.\r\n");
+		}
+		else {
+			tty_state = tty_move_constant;
+			fprintf(stderr, "INFO: Switching to constant move mode.\r\n");
+			fprintf(stderr, constant_move_help);
+		}
+		break;
+	case 'e':
+		if (module_data.state != module_idle) {
+			fprintf(stderr, "ERROR: The module must be in idle state to export picture.\r\n");
+		}
+		save_to_ppm();
+		break;
 
 	default:
 		fprintf(stderr, "WARN: Command '%c' is not recognized! Ignored.\r\n", command);
@@ -484,7 +716,7 @@ void handle_message(message msg) {
 		/*fprintf(stderr, "INFO: Current progress: Chunk %3d at [%2d, %2d] ... %2d iterations.\r\n",
 			data->cid, data->i_re, data->i_im, data->iter);
 			*/
-		fractal_add_point_in_chunk(data->cid, data->i_re, data->i_im, data->iter);
+		fractal_add_point(data->cid, data->i_re, data->i_im, data->iter);
 		break;
 	}
 
@@ -557,7 +789,8 @@ bool startup(int argc, char** argv) {
 	ACKs in order they are expected. */
 	messages = create_queue(1024);
 
-	fractal_initialize(default_width, default_height, default_precision, default_chunk_cols, default_chunk_rows);
+	fractal_initialize(default_width, default_height, default_precision, default_chunk_cols,
+		default_chunk_rows, max_top_left, max_bot_right, default_fractal_constant);
 
 	return true;
 }
@@ -605,6 +838,12 @@ int main(int argc, char** argv) {
 			break;
 		case tty_drawing_config:
 			poll_drawing_config();
+			break;
+		case tty_free_move:
+			poll_free_move();
+			break;
+		case tty_move_constant:
+			poll_move_constant();
 			break;
 		}
 

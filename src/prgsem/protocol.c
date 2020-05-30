@@ -27,6 +27,8 @@ static int message_payload_size(message_type const type) {
 	default:
 		fprintf(stderr, "Communication integrity error - Nucleo still transmits data from "
 			"previous application. Reset it, please.\r\n");
+		void terminal_raw_mode(bool);
+		terminal_raw_mode(false);
 		exit(EXIT_FAILURE);
 	}
 }

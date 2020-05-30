@@ -6,10 +6,25 @@ my_complex add(my_complex const a, my_complex const b) {
 	return result;
 }
 
+my_complex sub(my_complex const a, my_complex const b) {
+	return add(a, negate(b));
+}
+
 my_complex mul(my_complex const a, my_complex const b) {
 	my_complex const result = { a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re };
 	return result;
 }
+
+my_complex negate(my_complex const val) {
+	my_complex const result = { -val.re, -val.im };
+	return result;
+}
+
+my_complex scalar_mul(my_complex const a, float const scalar) {
+	my_complex const result = { a.re * scalar, a.im * scalar };
+	return result;
+}
+
 
 double magnitude(my_complex const a) {
 	return sqrt(a.re * a.re + a.im * a.im);

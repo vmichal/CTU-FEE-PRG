@@ -135,7 +135,7 @@ namespace {
 
 
 
-	void startup_sequence() {
+	void send_startup() {
 		auto const blink_with_delay = [](mbed::DigitalOut& led) {
 			led = true;
 			wait(50_ms);
@@ -229,7 +229,7 @@ extern "C" void message_enqueue(message const* msg) {
 
 int main() {
 	timer.start();
-	startup_sequence();
+	send_startup();
 
 	pc.attach(serial_rx_isr, mbed::Serial::RxIrq);
 

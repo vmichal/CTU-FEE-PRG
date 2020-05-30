@@ -24,7 +24,9 @@ extern "C" {
 		MSG_COMPUTE,          // request computation of a batch of tasks (chunk_id, nbr_tasks)
 		MSG_COMPUTE_DATA,     // computed result (chunk_id, result)
 		MSG_SET_COMPUTE,      // set computation parameters
-		MSG_COMM,              //Set baudrate and enable burst mode
+		MSG_COMM,             //Set baudrate
+		MSG_CONN_TEST,
+		MSG_CONN_OK
 
 	} message_type;
 
@@ -92,15 +94,15 @@ extern "C" {
 	// parse the message from buf to msg (unmarshaling)
 	message message_parse(const uint8_t* buf, int size);
 
+	//Calculate and fill checksum field of given message
 	void message_calculate_checksum(message* msg);
 
+	//Pass the message to the transmittion layer
 	void message_enqueue(message const* msg);
 
 	/* Returns true iff messages's checksum corresponds to the contained data. */
 	bool message_checksum_ok(message* msg);
 
-
-	/* end of messages.h */
 
 
 #ifdef __cplusplus

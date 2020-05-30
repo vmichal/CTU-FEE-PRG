@@ -218,33 +218,6 @@ void fractal_set_selection_policy(enum selection_policy p) {
 	selection_policy = p;
 }
 
-void fractal_draw_red_line(int x1, int y1, int x2, int y2) {
-	assert((x1 == x2) != (y1 == y2));
-
-	if (x1 == x2) {
-		int min = y1, max = y2;
-		if (y1 > y2) {
-			min = y2; max = y1;
-		}
-
-		for (int y = min; y < max; ++y) {
-			fractal_write_pixel(y, x1, 255, 255, 255);
-		}
-
-	}
-	else {
-		int min = x1, max = x2;
-		if (x1 > x2) {
-			min = x2; max = x1;
-		}
-
-		for (int x = min; x < max; ++x) {
-			fractal_write_pixel(x, y1, 255, 255, 255);
-		}
-	}
-
-}
-
 void fractal_set_edge(enum boundary b, my_complex new_value) {
 	if (b == bound_topleft) {
 		top_left = new_value;
@@ -260,7 +233,7 @@ my_complex fractal_get_edge(enum boundary b) {
 
 my_complex fractal_get_center() {
 	my_complex middle = add(top_left, bot_right);
-	return scalar_mul(middle, 0.5f);
+	return scalar_mul(middle, 0.5);
 }
 
 my_complex fractal_get_constant() {

@@ -24,6 +24,7 @@ namespace {
 	constexpr int init_baudrate = 115200;
 
 
+
 	mbed::Serial pc{ USBTX, USBRX, init_baudrate };
 	mbed::LowPowerTimer timer;
 
@@ -46,14 +47,18 @@ namespace {
 		}
 
 	};
+	constexpr Duration operator""_ms(std::uint64_t ms) { return Duration::from_ms(ms); }
+	constexpr Duration operator""_us(std::uint64_t us) { return Duration::from_us(us); }
+
+	/* How often at least some message has to be received to keep the connection. */
+	constexpr Duration communication_pause = 5000_ms;
+	constexpr Duration communication_timeout = 8000_ms;
 
 	void wait(Duration const d) {
 		Duration const start = Duration::now();
 		for (; !start.time_elapsed(d););
 	}
 
-	constexpr Duration operator""_ms(std::uint64_t ms) { return Duration::from_ms(ms); }
-	constexpr Duration operator""_us(std::uint64_t us) { return Duration::from_us(us); }
 
 
 	struct ButtonManager {
@@ -69,7 +74,7 @@ namespace {
 			been_pressed_ = true;
 		}
 
-		bool reset_if_pressed() {
+		bool poll_and_reset() {
 			if (been_pressed_) {
 				been_pressed_ = false;
 				return true;
@@ -120,6 +125,7 @@ namespace {
 	ringbuffer<uint8_t, 256> tx_buffer;
 	ringbuffer<uint8_t, 256> rx_buffer;
 
+	/* Interrupt handlers for transmit and receive IRQs from PC's serial connection. */
 	void serial_rx_isr() {
 		while (pc.readable() && rx_buffer.can_fit(1))
 			rx_buffer.write(pc.getc());
@@ -169,6 +175,7 @@ namespace {
 
 }
 
+/* Marshall the message into sequence of bytes and write them to transmit buffer. */
 extern "C" void message_enqueue(message const* msg) {
 	int const required_size = message_size(static_cast<message_type>(msg->type));
 	uint8_t buffer[sizeof(message)];
@@ -190,11 +197,27 @@ int main() {
 	ButtonManager buttonManager;
 	JuliaSetComputer julia;
 
+	Duration last_received = 0_ms;
+
 	for (; ;) {
 
-		if (buttonManager.reset_if_pressed()) {
+		if (buttonManager.poll_and_reset()) {
 			send_abort_request();
 			julia.state() = module_state::idle;
+		}
+
+		if (last_received.time_elapsed(communication_pause)) {
+			//Test the connection. If no responses arrive, the connection is dead
+			static Duration last_test_send = Duration::now();
+			if (last_received.time_elapsed(communication_timeout)) {
+				pc.baud(init_baudrate); //Reset baudrate and prepare to match new connection
+			}
+			else if (last_test_send.time_elapsed(100_ms)) {
+				message msg = { .type = MSG_CONN_TEST };
+				message_calculate_checksum(&msg);
+				message_enqueue(&msg);
+				last_test_send = Duration::now();
+			}
 		}
 
 		if (!rx_buffer.empty()) { //Handle incomming messages
@@ -202,7 +225,7 @@ int main() {
 			if (rx_buffer.can_read(size)) {
 				uint8_t buffer[sizeof(message)];
 				std::generate_n(buffer, size, [&]() { return rx_buffer.read(); });
-				message msg = message_parse(buffer, sizeof buffer);
+				message const msg = message_parse(buffer, sizeof buffer);
 
 				switch (msg.type) {
 				case MSG_GET_VERSION:
@@ -229,7 +252,15 @@ int main() {
 					wait(50_ms);
 					send_ok();
 					break;
+				case MSG_CONN_TEST: {
+
+					message msg = { .type = MSG_CONN_OK };
+					message_calculate_checksum(&msg);
+					message_enqueue(&msg);
+					break;
 				}
+				}
+				last_received = Duration::now();
 			}
 		}
 

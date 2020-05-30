@@ -23,6 +23,10 @@
 #include "fractal_drawer.h"
 #include "juliaset.h"
 
+//How long should the program hold off after nucleo's disconnect before closing
+#define COMMUNICATION_TIMEOUT  8
+#define COMMUNICATION_TIMEOUT_WARN 5
+
 char const* const basic_stdin_help = "Basic help:\r\n"
 "h - Print this help message.\r\n"
 "q - Abort computation and exit the program.\r\n"
@@ -57,8 +61,7 @@ char const* const drawing_config_help = "Drawing configuration.\r\n"
 "\r\n"
 "Chunk selection policy, e.g. by what criteria are unfinished chunks selected for computation:\r\n"
 "    r - Random - simply random...\r\n"
-"    s - Sequential - topmost and then leftmost empty chunk is selected.\r\n"
-"    c - Centered - prefer chunks that are closer to the middle.\r\n";
+"    s - Sequential - topmost and then leftmost empty chunk is selected.\r\n";
 
 char const* const free_move_help = "Free move.\r\n"
 "q  return to the main menu\r\n"
@@ -72,27 +75,26 @@ char const* const free_move_help = "Free move.\r\n"
 
 char const* const constant_move_help = "Move constant.\r\n"
 "q  return to the main menu\r\n"
-"r  restore default constant [-.4, .6]\r\n"
+"r  restore default constant\r\n"
 "w  move up\r\n"
 "a  move left\r\n"
 "s  move down\r\n"
 "d  move right\r\n";
 
 //Default arguments
-bool const cpu_boost = true;
 
+/*Coefficients by which camera moves and/or zooms the picture. Used as multiplicators.*/
 float const zoom_coefficient = 0.8f;
 float const move_coeeficient = 0.2f;
 
-int const default_width = 420;
-int const default_height = 280;
+int const default_width = 320;
+int const default_height = 240;
 int const default_precision = 40;
 int const default_chunk_rows = 10;
-int const default_chunk_cols = 10;
+int const default_chunk_cols = 20;
 
 my_complex const max_top_left = { -1.6, 1.1 }, max_bot_right = { 1.6, -1.1 };
-my_complex const default_fractal_constant = { 0.26, 0.0 };
-my_complex const sensible_top_left = {};
+my_complex const default_fractal_constant = { 0.0, 0.75 };
 
 //Ring buffer containing incoming messages
 queue_t* messages;
@@ -123,6 +125,7 @@ struct {
 
 } thread_data = { .quit = false };
 
+//Describes, how input from tty shall be interpreted. Allows existence of submenus
 enum tty_state {
 	tty_basic,
 	tty_baudrate_selection,
@@ -155,6 +158,7 @@ void terminal_raw_mode(bool raw) {
 
 }
 
+/* Conversion function from symbolic constant*/
 static int baudrate_to_int(speed_t const s) {
 	switch (s) {
 	case B0: return 0;
@@ -202,7 +206,7 @@ static void configure_serial(int const fd) {
 	termios.c_cflag |= CRTSCTS; // Disable RTS/CTS hardware flow control (most common)
 	termios.c_cflag |= CREAD | CLOCAL; // Turn on READ & ignore ctrl lines (CLOCAL = 1)
 
-	termios.c_lflag &= ~IEXTEN; // Make number 22 work
+	termios.c_lflag &= ~IEXTEN; // Make number 22 (character SYN) work
 	termios.c_lflag &= ~ECHONL; // Disable new-line echo
 	termios.c_lflag &= ~ECHO; // Disable echo
 	termios.c_lflag &= ~ECHOE; // Disable erasure
@@ -251,7 +255,8 @@ void message_enqueue(message const* msg) {
 	write(module_data.file_descriptor, buffer, message_size(msg->type));
 }
 
-/* Main function for the thread reading input from the serial port. */
+/* Main function for the thread reading input from the serial port.
+Reads characters in a 'never' ending loop and glues them together into sensible messages.*/
 static int serial_input_thread() {
 	fprintf(stderr, "INFO: Serial port listening thread started.\r\n");
 
@@ -280,11 +285,11 @@ static int serial_input_thread() {
 	return 0;
 }
 
-/*Main function for thread, that refreshes SDL window*/
+/*Main function for thread that updates the SDL window.*/
 int redrawing_thread() {
 	fprintf(stderr, "INFO: Redrawing thread started.\r\n");
 
-	int const FPS = 100; //bind to 100FPS for now
+	int const FPS = 100; //bound to 100FPS for now
 	for (; !thread_data.quit;) {
 
 		fractal_redraw();
@@ -295,6 +300,7 @@ int redrawing_thread() {
 	return 0;
 }
 
+/* Select new_speed as the serial port frequency and communicate this to the module. */
 void switch_baudrates(speed_t const new_speed) {
 
 	module_data.baudrate = new_speed;
@@ -367,10 +373,6 @@ void poll_drawing_config() {
 		fractal_set_selection_policy(command == 's' ? policy_sequential : policy_random);
 		fprintf(stderr, "INFO: Selected %s policy.\r\n", command == 's' ? "sequential" : "random");
 		break;
-	case 'c':
-		fractal_set_selection_policy(policy_centered);
-		fprintf(stderr, "INFO: Selected central policy.\r\n");
-		break;
 
 	case 'q':
 		tty_state = tty_basic;
@@ -382,6 +384,8 @@ void poll_drawing_config() {
 
 }
 
+//Zoom in or out depending on the op. Simply pushes edges of the visible rectangle 
+//toward or away freom the center of the screen.
 void zoom(char const op) {
 	assert(op == '+' || op == '-');
 	my_complex const middle = fractal_get_center();
@@ -396,10 +400,10 @@ void zoom(char const op) {
 	fractal_set_edge(bound_botright, add(bot_right, middle));
 	fractal_set_edge(bound_topleft, add(top_left, middle));
 	fractal_set_all_chunks_unseen();
-	//fractal_clear_buffer();
 	fractal_compute_locally();
 }
 
+//Moves edges of the visible rectangle and thus translates our view of the complex plane
 void move(char const op) {
 
 	my_complex const visible = sub(fractal_get_edge(bound_topleft),
@@ -429,11 +433,10 @@ void move(char const op) {
 	fractal_set_edge(bound_topleft, add(fractal_get_edge(bound_topleft), displacement));
 	fractal_set_edge(bound_botright, add(fractal_get_edge(bound_botright), displacement));
 	fractal_set_all_chunks_unseen();
-	//fractal_clear_buffer();
 	fractal_compute_locally();
 }
 
-/* Allows zooming to be performed. */
+/* Encapsulates reading from stdin when the camera is flying free above the complex plane. */
 void poll_free_move() {
 
 	int const command = fgetc(stdin);
@@ -474,7 +477,7 @@ void poll_free_move() {
 
 }
 
-/* Allows zooming to be performed. */
+/* Encapsulates reading from stdin when commads regarding the constant C positioning are expected. */
 void poll_move_constant() {
 
 	int const command = fgetc(stdin);
@@ -497,8 +500,8 @@ void poll_move_constant() {
 	case 'w': case 's': case 'a': case'd': {
 
 
-		my_complex dx = { 0.001, 0 };
-		my_complex dy = { 0, 0.001 };
+		my_complex const dx = { 0.01, 0 };
+		my_complex const dy = { 0, 0.01 };
 
 		my_complex displacement = { 0.0f,0.0f };
 		switch (command) {
@@ -518,7 +521,6 @@ void poll_move_constant() {
 
 		fractal_set_constant(add(fractal_get_constant(), displacement));
 		fractal_set_all_chunks_unseen();
-		//fractal_clear_buffer();
 		fractal_compute_locally();
 		break;
 	}
@@ -757,7 +759,14 @@ void handle_message(message msg) {
 			break;
 		}
 		break;
+	case MSG_CONN_TEST: {
+		fprintf(stderr, "INFO: Received connection test.\r\n");
 
+		message msg = { .type = MSG_CONN_OK };
+		message_calculate_checksum(&msg);
+		message_enqueue(&msg);
+		break;
+	}
 	default:
 		assert(false);
 	}
@@ -787,7 +796,7 @@ bool startup(int argc, char** argv) {
 	/* Create ringbuffers for sent commands and expected acknowledgements. This way communication
 	is safe even if the module would delay sending acknowledgements. It is still necessary to send
 	ACKs in order they are expected. */
-	messages = create_queue(1024);
+	messages = create_queue(64);
 
 	fractal_initialize(default_width, default_height, default_precision, default_chunk_cols,
 		default_chunk_rows, max_top_left, max_bot_right, default_fractal_constant);
@@ -824,10 +833,27 @@ int main(int argc, char** argv) {
 		return EXIT_FAILURE;
 	}
 
+	time_t last_received = time(NULL);
 
 	/*Main loop is based on the same variable as estimating thread.
 	Should it switch to false, both threads will exit loops. */
 	for (; !thread_data.quit;) {
+
+		if (time(NULL) - last_received > COMMUNICATION_TIMEOUT_WARN) {
+			static time_t last_sent = 0;
+			if (time(NULL) - last_received > COMMUNICATION_TIMEOUT) {
+				fprintf(stderr, "Communication timed out. Nucleo disconnected.\r\n");
+				thread_data.quit = true; //Leave the program, our computational unit is deda
+			}
+			else if (time(NULL) - last_sent) {
+				fprintf(stderr, "Communication was quite for too long.\r\n");
+				message msg = { .type = MSG_CONN_TEST };
+				message_calculate_checksum(&msg);
+				message_enqueue(&msg);
+				last_sent = time(NULL);
+			}
+
+		}
 
 		switch (tty_state) {
 		case tty_basic:
@@ -850,6 +876,7 @@ int main(int argc, char** argv) {
 		if (get_queue_size(messages) == 0) {
 			continue;
 		}
+		last_received = time(NULL);
 
 		handle_message(pop_from_queue(messages));
 	}

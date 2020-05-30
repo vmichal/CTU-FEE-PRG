@@ -20,24 +20,28 @@ my_complex negate(my_complex const val) {
 	return result;
 }
 
-my_complex scalar_mul(my_complex const a, float const scalar) {
+my_complex scalar_mul(my_complex const a, double const scalar) {
 	my_complex const result = { a.re * scalar, a.im * scalar };
 	return result;
 }
 
+static double magnitude_squared(my_complex const a) {
+	return a.re * a.re + a.im * a.im;
+}
 
 double magnitude(my_complex const a) {
-	return sqrt(a.re * a.re + a.im * a.im);
+	return sqrt(magnitude_squared(a));
 }
 
 
+
 int convergence_test(my_complex point, my_complex c, int max_steps) {
-	if (magnitude(point) >= 2.0f) {
+	if (magnitude_squared(point) >= 4.0f) {
 		return 0;
 	}
 
 	for (int i = 1; i <= max_steps; ++i) {
-		if (magnitude(point) >= 2.0f) {
+		if (magnitude_squared(point) >= 4.0f) {
 			return i;
 		}
 		point = add(c, mul(point, point));

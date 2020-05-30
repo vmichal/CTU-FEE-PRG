@@ -6,10 +6,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* Returns the size of message-specific fields i.e. total without type and checksum. */
 static int message_payload_size(message_type const type) {
 	switch (type) {
 	case MSG_OK: case MSG_ERROR: case MSG_ABORT:
 	case MSG_DONE: case MSG_GET_VERSION:
+	case MSG_CONN_TEST: case MSG_CONN_OK:
 		return 0;
 	case MSG_VERSION:
 		return 3;
@@ -22,7 +24,7 @@ static int message_payload_size(message_type const type) {
 	case MSG_SET_COMPUTE:
 		return 1 + 4 * sizeof(float);
 	case MSG_COMM:
-		return 4+1;
+		return 4 + 1;
 
 	default:
 		fprintf(stderr, "Communication integrity error - Nucleo still transmits data from "

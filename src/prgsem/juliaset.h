@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-#include<math.h>
+#include <math.h>
 #include <stdint.h>
 
 typedef struct my_complex {
@@ -16,7 +16,7 @@ my_complex mul(my_complex, my_complex);
 my_complex add(my_complex, my_complex);
 my_complex sub(my_complex, my_complex);
 my_complex negate(my_complex);
-my_complex scalar_mul(my_complex, float);
+my_complex scalar_mul(my_complex, double);
 double magnitude(my_complex);
 
 /* Examine convergence of the expression describing the Julia set for given constant

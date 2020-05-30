@@ -13,8 +13,9 @@ struct JuliaSetComputer {
 
 	my_complex constant;
 	float dx, dy;
-	int max_steps;
+	int precision;
 
+	//fixed point towards which coordinates are calculated
 	my_complex upper_left_corner;
 	int chunk_id, width, height;
 	int row, col;
@@ -29,7 +30,7 @@ public:
 		constant = { msg.c_re, msg.c_im };
 		dx = msg.d_re;
 		dy = msg.d_im;
-		max_steps = msg.n;
+		precision = msg.n;
 	}
 
 	void start_computation(msg_compute const& msg) {
@@ -42,11 +43,13 @@ public:
 	}
 
 	msg_compute_data compute_next() {
+		my_complex const point = add(upper_left_corner, my_complex{ dx * col,-dy * row });
+
 		msg_compute_data result;
 		result.cid = chunk_id;
 		result.i_im = row;
 		result.i_re = col;
-		result.iter = convergence_test(add(upper_left_corner, my_complex{ dx * col,-dy * row }), constant, max_steps);
+		result.iter = convergence_test(point, constant, precision);
 		if (++col == width) {
 			col = 0;
 			if (++row == height) {

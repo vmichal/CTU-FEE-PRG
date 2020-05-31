@@ -23,7 +23,8 @@
 #include "fractal_drawer.h"
 #include "juliaset.h"
 
-//How long should the program hold off after nucleo's disconnect before closing
+//How long (in sec) should the program hold off when communication stops.
+//This may occur namely because of disconnect. Program then exits
 #define COMMUNICATION_TIMEOUT  8
 #define COMMUNICATION_TIMEOUT_WARN 5
 
@@ -81,7 +82,7 @@ char const* const constant_move_help = "Move constant.\r\n"
 "s  move down\r\n"
 "d  move right\r\n";
 
-//Default arguments
+//Default configuration
 
 /*Coefficients by which camera moves and/or zooms the picture. Used as multiplicators.*/
 float const zoom_coefficient = 0.8f;
@@ -249,6 +250,12 @@ void send_message_compute() {
 	message_enqueue(&msg);
 }
 
+void send_connection_confirmation() {
+	message msg = { .type = MSG_CONN_OK };
+	message_calculate_checksum(&msg);
+	message_enqueue(&msg);
+}
+
 void message_enqueue(message const* msg) {
 	uint8_t buffer[sizeof(message)];
 	message_decompose(msg, buffer, sizeof buffer);
@@ -267,7 +274,14 @@ static int serial_input_thread() {
 
 	for (; !thread_data.quit;) {
 		if (read(module_data.file_descriptor, &buffer[write_index], 1) == 1) {
-			++write_index;
+			if (++write_index == 1) {//When reading first byte, check whether it makes sense
+				if (!message_is_valid_type(buffer[0])) {
+					//Received garbage, skip it and wait for sensible data to arrive
+					fprintf(stderr, "WARN: Discarding received byte %x.\r\n", buffer[0]);
+					write_index = 0;
+					continue;
+				}
+			}
 
 			if (write_index == message_size(buffer[0])) {
 				message const msg = message_parse(buffer, write_index);
@@ -550,9 +564,10 @@ void poll_stdin() {
 	case 'q':
 		fprintf(stderr, "INFO: Requested exit command.\r\n");
 		thread_data.quit = true;
-		if (module_data.state != module_idle) {
-			send_abort_request();
-		}
+		//Notify Nucleo that we don't like it anymore (resets Nucleo)
+		message exit_notification = { .type = MSG_RESET };
+		message_calculate_checksum(&exit_notification);
+		message_enqueue(&exit_notification);
 		break;
 	case 'g':
 		fprintf(stderr, "INFO: Firmware version requested.\r\n");
@@ -761,10 +776,7 @@ void handle_message(message msg) {
 		break;
 	case MSG_CONN_TEST: {
 		fprintf(stderr, "INFO: Received connection test.\r\n");
-
-		message msg = { .type = MSG_CONN_OK };
-		message_calculate_checksum(&msg);
-		message_enqueue(&msg);
+		send_connection_confirmation();
 		break;
 	}
 	default:
@@ -804,9 +816,28 @@ bool startup(int argc, char** argv) {
 	return true;
 }
 
+/* Checks command line arguments, their count, order etc. Returns false on error.
+  If an error is detected, prints simple help. Does not modify program state.*/
+bool check_args(int argc, char** argv) {
+	const char* const help = "Usage: %s serial_port\n\n"
+		"This application is a driver for Julia set computation using device connected to\n"
+		"given serial port. Forwards commands from the user and draws intermediate results\n"
+		"to screen. Contains help (press h within the program).\r\n";
+
+	if (argc != 2) {
+		fprintf(stderr, help, argv[0]);
+		return false;
+	}
+	//More checking done in function startup
+	return true;
+}
 
 
 int main(int argc, char** argv) {
+
+	if (!check_args(argc, argv)) {
+		return EXIT_FAILURE;
+	}
 
 	if (!startup(argc, argv)) {
 		fprintf(stderr, "ERROR: Cannot open serial port %s!\n", argv[1]);
@@ -823,6 +854,7 @@ int main(int argc, char** argv) {
 		return EXIT_FAILURE;
 	}
 
+
 	thrd_t redrawing;
 	if (thrd_success != thrd_create(&redrawing, &redrawing_thread, &thread_data)) {
 		fprintf(stderr, "ERROR: Cannot start thread to read from serial port. Exiting!\r\n");
@@ -833,24 +865,26 @@ int main(int argc, char** argv) {
 		return EXIT_FAILURE;
 	}
 
+
 	time_t last_received = time(NULL);
 
 	/*Main loop is based on the same variable as estimating thread.
 	Should it switch to false, both threads will exit loops. */
 	for (; !thread_data.quit;) {
 
-		if (time(NULL) - last_received > COMMUNICATION_TIMEOUT_WARN) {
+		time_t const now = time(NULL); //Second resolution is just enough
+		if (now - last_received > COMMUNICATION_TIMEOUT_WARN) {
 			static time_t last_sent = 0;
-			if (time(NULL) - last_received > COMMUNICATION_TIMEOUT) {
+			if (now - last_received > COMMUNICATION_TIMEOUT) {
 				fprintf(stderr, "Communication timed out. Nucleo disconnected.\r\n");
-				thread_data.quit = true; //Leave the program, our computational unit is deda
+				thread_data.quit = true; //Leave the program, our computational unit is dead
 			}
-			else if (time(NULL) - last_sent) {
-				fprintf(stderr, "Communication was quite for too long.\r\n");
+			else if (now - last_sent > 0) {
+				fprintf(stderr, "Communication was quiet for too long.\r\n");
 				message msg = { .type = MSG_CONN_TEST };
 				message_calculate_checksum(&msg);
 				message_enqueue(&msg);
-				last_sent = time(NULL);
+				last_sent = now;
 			}
 
 		}
@@ -876,7 +910,7 @@ int main(int argc, char** argv) {
 		if (get_queue_size(messages) == 0) {
 			continue;
 		}
-		last_received = time(NULL);
+		last_received = now;
 
 		handle_message(pop_from_queue(messages));
 	}
@@ -885,8 +919,8 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "WARN: Remaining %d unparsed messages!\r\n", get_queue_size(messages));
 	}
 
-	/*Cleanup resources first and postpone thread joining. There are up to 5s of
-	delay, since the estimation thread has to wake up first */
+
+	/*Cleanup resources first and postpone thread joining.*/
 	delete_queue(messages);
 	terminal_raw_mode(false);
 	printf("\n\n");

@@ -25,8 +25,9 @@ extern "C" {
 		MSG_COMPUTE_DATA,     // computed result (chunk_id, result)
 		MSG_SET_COMPUTE,      // set computation parameters
 		MSG_COMM,             //Set baudrate
-		MSG_CONN_TEST,
-		MSG_CONN_OK
+		MSG_CONN_TEST,        //Sent by a node to test whether there is someone on the other end
+		MSG_CONN_OK,          //Response to the message above
+		MSG_RESET,            //Reset Nucleo at the end of program (to restore default baudrate etc)
 
 	} message_type;
 
@@ -102,6 +103,9 @@ extern "C" {
 
 	/* Returns true iff messages's checksum corresponds to the contained data. */
 	bool message_checksum_ok(message* msg);
+
+	//Returns true iff given byte corresponds to a valid message type
+	bool message_is_valid_type(uint8_t type);
 
 
 

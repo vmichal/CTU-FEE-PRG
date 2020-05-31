@@ -8,10 +8,12 @@
 
 /* Returns the size of message-specific fields i.e. total without type and checksum. */
 static int message_payload_size(message_type const type) {
+	assert(message_is_valid_type(type));
 	switch (type) {
 	case MSG_OK: case MSG_ERROR: case MSG_ABORT:
 	case MSG_DONE: case MSG_GET_VERSION:
 	case MSG_CONN_TEST: case MSG_CONN_OK:
+	case MSG_RESET:
 		return 0;
 	case MSG_VERSION:
 		return 3;
@@ -25,17 +27,29 @@ static int message_payload_size(message_type const type) {
 		return 1 + 4 * sizeof(float);
 	case MSG_COMM:
 		return 4 + 1;
+	}
+	assert(false);
+}
 
+
+bool message_is_valid_type(uint8_t type) {
+	switch (type) {
+	case MSG_OK: case MSG_ERROR: case MSG_ABORT:
+	case MSG_DONE: case MSG_GET_VERSION:
+	case MSG_CONN_TEST: case MSG_CONN_OK:
+	case MSG_RESET:
+	case MSG_VERSION: case MSG_STARTUP:
+	case MSG_COMPUTE: case MSG_COMPUTE_DATA:
+	case MSG_SET_COMPUTE: case MSG_COMM:
+		return true;
 	default:
-		fprintf(stderr, "Communication integrity error - Nucleo still transmits data from "
-			"previous application. Reset it, please.\r\n");
-		void terminal_raw_mode(bool);
-		terminal_raw_mode(false);
-		exit(EXIT_FAILURE);
+		return false;
 	}
 }
 
+
 int message_size(message_type const type) {
+	assert(message_is_valid_type(type));
 	//Two bytes for type and checksum + size of payload
 	return 2 + message_payload_size(type);
 }
@@ -135,6 +149,7 @@ message message_parse(const uint8_t* buf, int size) {
 void message_calculate_checksum(message* msg) {
 	unsigned checksum = 0;
 	int const size = message_size(msg->type) - 1;
+
 	uint8_t const* const view = (uint8_t const*)(void const*)msg;
 	for (int i = 0; i < size; ++i)
 		checksum += view[i];

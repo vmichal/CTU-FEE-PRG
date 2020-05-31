@@ -11,14 +11,14 @@ enum class module_state {
 
 struct JuliaSetComputer {
 
-	my_complex constant;
-	float dx, dy;
-	int precision;
+	my_complex constant{ 0.0,0.0 };
+	float dx = 0.0f, dy = 0.0f;
+	int precision = 0;
 
 	//fixed point towards which coordinates are calculated
-	my_complex upper_left_corner;
-	int chunk_id, width, height;
-	int row, col;
+	my_complex upper_left_corner{ 0.0,0.0 };
+	int chunk_id = 0, width = 0, height = 0;
+	int row = 0, col = 0;
 
 	volatile module_state state_ = module_state::idle;
 

@@ -21,6 +21,9 @@ namespace {
 	constexpr uint8_t VERSION_MAJOR = 4, VERSION_MINOR = 2, VERSION_PATCH = 0;
 
 	constexpr char startup_string[] = "This4uHeli";
+
+	//Communication with the master is configured to use this baudrate by default.
+	//When the communication closes, whole system is reset and thus defaults are restored.
 	constexpr int init_baudrate = 115200;
 
 
@@ -141,9 +144,9 @@ namespace {
 		}
 	}
 
-
-
 	void send_startup() {
+
+		//Notify master that we are ready.
 		message startup = { .type = MSG_STARTUP };
 		std::copy(std::begin(startup_string), std::prev(std::end(startup_string))
 			, std::begin(startup.data.startup.message));
@@ -173,6 +176,9 @@ namespace {
 		message_enqueue(&msg);
 	}
 
+
+
+
 }
 
 /* Marshall the message into sequence of bytes and write them to transmit buffer. */
@@ -197,7 +203,7 @@ int main() {
 	ButtonManager buttonManager;
 	JuliaSetComputer julia;
 
-	Duration last_received = 0_ms;
+	Duration last_received = Duration::now();
 
 	for (; ;) {
 
@@ -210,7 +216,7 @@ int main() {
 			//Test the connection. If no responses arrive, the connection is dead
 			static Duration last_test_send = Duration::now();
 			if (last_received.time_elapsed(communication_timeout)) {
-				pc.baud(init_baudrate); //Reset baudrate and prepare to match new connection
+				NVIC_SystemReset(); //Reset system and prepare to match new connection
 			}
 			else if (last_test_send.time_elapsed(100_ms)) {
 				message msg = { .type = MSG_CONN_TEST };
@@ -223,6 +229,7 @@ int main() {
 		if (!rx_buffer.empty()) { //Handle incomming messages
 			int const size = message_size(static_cast<message_type>(rx_buffer.peek()));
 			if (rx_buffer.can_read(size)) {
+				last_received = Duration::now();
 				uint8_t buffer[sizeof(message)];
 				std::generate_n(buffer, size, [&]() { return rx_buffer.read(); });
 				message const msg = message_parse(buffer, sizeof buffer);
@@ -259,8 +266,10 @@ int main() {
 					message_enqueue(&msg);
 					break;
 				}
+				case MSG_RESET:
+					//Quit the application as the master does not like us anymore
+					NVIC_SystemReset();
 				}
-				last_received = Duration::now();
 			}
 		}
 
